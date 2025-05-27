@@ -3,6 +3,7 @@
 ---
 ## Screenshot
 
+![MultiAssistant Screenshot](https://github.com/user-attachments/assets/5b67a645-fe58-4a16-8b04-9d41a1f4914d)
 
 
 ---
