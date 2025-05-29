@@ -3,7 +3,8 @@
 ---
 ## Screenshot
 
-![MultiAssistant Screenshot](https://github.com/user-attachments/assets/5b67a645-fe58-4a16-8b04-9d41a1f4914d)
+![MultiAssistant Screenshot 1 1](https://github.com/user-attachments/assets/0b972718-7e75-4b25-9c32-7afba6101f61)
+
 
 
 ---
