@@ -25,7 +25,6 @@ class ViewController: NSViewController,
     private var webView2ZoomScale: CGFloat = 1.0
     private var urlString1: String!
     private var urlString2: String!
-    // Removed: static let idleHideDelaySecondsKey
     
     private var webViewsReloadingAfterTermination: Set<WKWebView> = []
     private var activeWebView: WKWebView { webView1.isHidden ? webView2 : webView1 }
@@ -35,9 +34,8 @@ class ViewController: NSViewController,
     override func viewDidLoad() {
         super.viewDidLoad()
         NSLog("VC: viewDidLoad")
-        // Removed: UserDefaults.standard.register(defaults: [ViewController.idleHideDelaySecondsKey: 5.0])
         loadSettings()
-        configureContainerLayer()
+        configureContainerLayer() // Configure layer properties first
         setupWebViews()
         loadInitialContent()
         setupKeyboardShortcuts()
@@ -52,7 +50,7 @@ class ViewController: NSViewController,
         NSLog("VC: viewDidAppear. Window isVisible: \(window.isVisible), isKey: \(window.isKeyWindow), AppIsActive: \(NSApp.isActive)")
         
         if !windowChromeConfigured {
-            setupWindowChrome()
+            setupWindowChrome() // Setup window chrome after view is in a window
             windowChromeConfigured = true
         }
         
@@ -75,10 +73,22 @@ class ViewController: NSViewController,
 
     // MARK: - UI Setup Helpers
     private func configureContainerLayer() {
-        view.wantsLayer = true
+        view.wantsLayer = true // Ensure the view is layer-backed
         view.layer?.cornerRadius = cornerRadiusValue
         view.layer?.masksToBounds = true
-        NSLog("VC: Container layer configured.")
+
+        // Set an opaque background color for the main content view.
+        if #available(macOS 10.14, *) {
+            view.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        } else {
+            view.layer?.backgroundColor = NSColor.white.cgColor // Fallback for older macOS
+        }
+
+        // Add a border directly to the view's layer.
+        view.layer?.borderWidth = 1.5 // Set desired border width (e.g., 1.0, 1.5, 2.0 points)
+        view.layer?.borderColor = NSColor.separatorColor.cgColor // Adapts to light/dark mode
+        
+        NSLog("VC: Container layer configured with custom border.")
     }
 
     private func setupWebViews() {
@@ -92,7 +102,7 @@ class ViewController: NSViewController,
             wv.navigationDelegate = self
             wv.uiDelegate = self
             wv.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(wv)
+            view.addSubview(wv) // Add to the ViewController's view
             NSLayoutConstraint.activate([
                 wv.topAnchor.constraint(equalTo: view.topAnchor),
                 wv.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -112,13 +122,17 @@ class ViewController: NSViewController,
         NSLog("VC: setupWindowChrome - Configuring window...")
         window.delegate = self
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
+        
         window.isOpaque = false
         window.backgroundColor = .clear
+        
         window.isMovableByWindowBackground = true
         window.hasShadow = true
         window.setFrameAutosaveName(windowAutosaveName)
@@ -202,7 +216,7 @@ class ViewController: NSViewController,
                 if window.isKeyWindow {
                     self.proceedWithFirstResponder(for: webViewToFocus, window: window)
                 } else {
-                    NSLog("VC: attemptWebViewFocus (delayed) - Window STILL NOT key. Focus might fail.")
+                    NSLog("VC: attemptWebViewFocus (delayed) - Window STILL NOT key. Focus might fail or target wrong element.")
                     self.proceedWithFirstResponder(for: webViewToFocus, window: window)
                 }
             }
@@ -218,13 +232,17 @@ class ViewController: NSViewController,
         
         if window.makeFirstResponder(webViewToFocus) {
             NSLog("VC: proceedWithFirstResponder - SUCCESS: Made \(webViewName) first responder.")
-            executeJavaScriptFocus(reason: "proceedWithFirstResponder")
+            executeJavaScriptFocus(reason: "proceedWithFirstResponder_success")
         } else {
             NSLog("VC: proceedWithFirstResponder - FAILED: Could not make \(webViewName) first responder.")
             if window.firstResponder != webViewToFocus && window.canBecomeKey {
-                 NSLog("VC: proceedWithFirstResponder - Making window itself first responder as a fallback.")
-                 window.makeFirstResponder(self.view)
-                 executeJavaScriptFocus(reason: "proceedWithFirstResponder_fallbackFR")
+                 NSLog("VC: proceedWithFirstResponder - Making window's content view (self.view) first responder as a fallback.")
+                 if window.makeFirstResponder(self.view) {
+                    NSLog("VC: proceedWithFirstResponder - SUCCESS: Made self.view first responder.")
+                 } else {
+                    NSLog("VC: proceedWithFirstResponder - FAILED: Could not make self.view first responder either.")
+                 }
+                 executeJavaScriptFocus(reason: "proceedWithFirstResponder_fallbackFR_self.view")
             }
         }
     }
@@ -237,20 +255,33 @@ class ViewController: NSViewController,
         
         let javascript = """
             (function() {
-                console.log('[\(jsReason)] Starting. document.hasFocus(): ' + document.hasFocus());
-                let target = document.getElementById('prompt-textarea'); 
-                if (!target) { 
-                     target = document.querySelector('textarea:not([disabled]):not([readonly]), input[type="text"]:not([disabled]):not([readonly]), div[contenteditable="true"]:not([disabled])');
+                console.log('[\(jsReason)] Starting. document.hasFocus(): ' + document.hasFocus() + ', activeElement: ' + (document.activeElement ? document.activeElement.tagName : 'null'));
+                let focusableElements = [
+                    '#prompt-textarea', 
+                    'textarea:not([disabled]):not([readonly])',
+                    'input[type="text"]:not([disabled]):not([readonly])',
+                    'input:not([type="hidden"]):not([disabled]):not([readonly])', 
+                    'div[contenteditable="true"]:not([disabled])',
+                    '[tabindex]:not([tabindex="-1"]):not([disabled])' 
+                ];
+                let target;
+                for (let selector of focusableElements) {
+                    target = document.querySelector(selector);
+                    if (target) {
+                        console.log('[\(jsReason)] Found target with selector: ' + selector);
+                        break;
+                    }
                 }
+
                 if (target) {
-                    console.log('[\(jsReason)] Found target. Attempting focus/click.');
-                    if (typeof target.focus === 'function') { target.focus(); }
-                    if (typeof target.click === 'function') { target.click(); } 
+                    console.log('[\(jsReason)] Attempting focus/click on: ' + target.tagName + (target.id ? '#' + target.id : ''));
+                    if (typeof target.focus === 'function') { target.focus({ preventScroll: false }); } 
+                    
                     setTimeout(function() {
-                        console.log('[\(jsReason)] After attempts. Active element: ' + (document.activeElement ? document.activeElement.tagName : 'null') + '. Document has focus: ' + document.hasFocus());
+                        console.log('[\(jsReason)] After attempts. Active element: ' + (document.activeElement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : 'null') + '. Document has focus: ' + document.hasFocus());
                     }, 100);
                 } else {
-                    console.log('[\(jsReason)] No suitable target found. Focusing body.');
+                    console.log('[\(jsReason)] No suitable target found. Focusing body as fallback.');
                     if (document.body && typeof document.body.focus === 'function') { document.body.focus(); }
                 }
             })();
@@ -267,13 +298,8 @@ class ViewController: NSViewController,
         webView1.isHidden.toggle()
         webView2.isHidden.toggle()
 
-        // --- START OF PROPOSED FIX ---
-        // Ensure the currently visible webView is the top-most view
-        // to correctly receive drag-and-drop events.
-        // The 'activeWebView' computed property will correctly give us the one that is now visible.
         let currentActiveWebView = activeWebView
-        view.addSubview(currentActiveWebView) // This removes it and re-adds it on top
-        // --- END OF PROPOSED FIX ---
+        view.addSubview(currentActiveWebView)
 
         applyZoom(to: activeWebView, scale: currentZoom(for: activeWebView))
         NSLog("VC: Calling attemptWebViewFocus after page toggle.")
@@ -327,8 +353,10 @@ class ViewController: NSViewController,
         applyZoom(to: wv, scale: currentZoom(for: wv))
 
         if view.window?.isKeyWindow == true || webViewsReloadingAfterTermination.contains(wv) {
-            NSLog("VC: WebView \(webViewName) finished, attempting focus.")
+            NSLog("VC: WebView \(webViewName) finished, attempting focus (window is key or was reloading).")
             attemptWebViewFocus()
+        } else {
+            NSLog("VC: WebView \(webViewName) finished, but window not key and not specifically reloading. Focus not attempted automatically.")
         }
         webViewsReloadingAfterTermination.remove(wv)
     }
@@ -357,14 +385,17 @@ class ViewController: NSViewController,
             NSLog("VC: OpenSettings - No window. Attempting to show via AppDelegate.")
             (NSApp.delegate as? AppDelegate)?.showWindowAction()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if self.view.window != nil { self.presentSettingsAlert() }
-                else { NSLog("VC: OpenSettings - Window still not available after delay.")}
+                if self.view.window != nil {
+                    self.presentSettingsAlert()
+                } else {
+                    NSLog("VC: OpenSettings - Window still not available after delay and AppDelegate action.")
+                }
             }
             return
         }
 
         if !window.isVisible || !window.isKeyWindow {
-            NSLog("VC: OpenSettings - Window not visible/key. Activating.")
+            NSLog("VC: OpenSettings - Window not visible/key. Activating and making key.")
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -393,11 +424,10 @@ class ViewController: NSViewController,
     
     private func presentSettingsAlert() {
         guard let window = self.view.window, window.isVisible, window.isKeyWindow else {
-            NSLog("VC: PresentSettingsAlert - Window conditions not met (not visible or not key).")
+            NSLog("VC: PresentSettingsAlert - Window conditions not met (not visible or not key). Retrying if not key.")
             if let w = self.view.window, !w.isKeyWindow {
                 w.makeKeyAndOrderFront(nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.presentSettingsAlert() }
-                return
             }
             return
         }
@@ -423,7 +453,6 @@ class ViewController: NSViewController,
             let label = NSTextField(labelWithString: labelString)
             label.alignment = .right
             label.translatesAutoresizingMaskIntoConstraints = false
-            label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             label.widthAnchor.constraint(equalToConstant: labelColumnWidth).isActive = true
             
             control.translatesAutoresizingMaskIntoConstraints = false
@@ -435,6 +464,10 @@ class ViewController: NSViewController,
             hStack.spacing = hStackSpacing
             hStack.alignment = .firstBaseline
             hStack.distribution = .fill
+            
+            if let textField = control as? NSTextField {
+                 textField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+            }
             
             return hStack
         }
@@ -459,12 +492,6 @@ class ViewController: NSViewController,
         autohideControlRow.orientation = .horizontal
         autohideControlRow.spacing = 0
         autohideControlRow.alignment = .firstBaseline
-
-        // Removed Idle Time UI elements:
-        // let idleTimeLabel = NSTextField(labelWithString: "seconds (0 to disable)")
-        // let idleTimeTextField = NSTextField(string: String(format: "%.1f", UserDefaults.standard.double(forKey: ViewController.idleHideDelaySecondsKey)))
-        // let idleTimeHStack = NSStackView(views: [idleTimeTextField, idleTimeLabel])
-        // let idleTimeRow = createSettingRow(labelString: "Auto-hide after inactivity:", control: idleTimeHStack)
 
         let globalShortcutSectionHeader = createSectionHeader(title: "Global Toggle Shortcut (Show/Hide Window)")
         
@@ -529,8 +556,7 @@ class ViewController: NSViewController,
         mainVerticalStackView.addArrangedSubview(behaviorSectionHeader)
         mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: behaviorSectionHeader)
         mainVerticalStackView.addArrangedSubview(autohideControlRow)
-        // Removed: mainVerticalStackView.addArrangedSubview(idleTimeRow)
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: autohideControlRow) // Adjusted to space after autohideControlRow
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: autohideControlRow)
 
         mainVerticalStackView.addArrangedSubview(createSeparatorBox())
         mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
@@ -549,17 +575,26 @@ class ViewController: NSViewController,
         mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: otherShortcutsSectionHeader)
         mainVerticalStackView.addArrangedSubview(togglePageRow)
 
+        // --- MODIFICATION FOR SETTINGS PANEL SIZE ---
         mainVerticalStackView.translatesAutoresizingMaskIntoConstraints = false
-        alert.accessoryView = mainVerticalStackView
+        // Explicitly set frame width, layout, then set frame height based on fitting size
+        // This ensures the stack view has a defined width for its internal layout pass.
+        mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: 10) // Initial height is temporary
+        mainVerticalStackView.layoutSubtreeIfNeeded() // Calculate content height based on width
         
-        mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: 0)
-        mainVerticalStackView.layoutSubtreeIfNeeded()
         let requiredHeight = mainVerticalStackView.fittingSize.height
         mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: requiredHeight)
         
+        alert.accessoryView = mainVerticalStackView
+        
+        // This width constraint on the accessoryView itself can be kept as a safeguard,
+        // or to satisfy the alert's own layout if it prefers constraints.
         if let accessory = alert.accessoryView {
              accessory.widthAnchor.constraint(equalToConstant: desiredAccessoryViewWidth).isActive = true
+             // Optionally, you could also constrain the height if `mainVerticalStackView.frame` wasn't set.
+             // accessory.heightAnchor.constraint(equalToConstant: requiredHeight).isActive = true
         }
+        // --- END OF MODIFICATION ---
         
         alert.window.layoutIfNeeded()
         
@@ -569,7 +604,6 @@ class ViewController: NSViewController,
                                              url1TF: url1TextField,
                                              url2TF: url2TextField,
                                              autohideCB: autohideCheckbox,
-                                             // Removed: idleTimeTF: idleTimeTextField,
                                              keyTF: keyTextField,
                                              optionCB: optionCheckbox,
                                              commandCB: commandCheckbox,
@@ -584,7 +618,7 @@ class ViewController: NSViewController,
         _ response: NSApplication.ModalResponse,
         alert: NSAlert,
         url1TF: NSTextField, url2TF: NSTextField,
-        autohideCB: NSButton, // Removed idleTimeTF parameter
+        autohideCB: NSButton,
         keyTF: NSTextField,
         optionCB: NSButton, commandCB: NSButton, shiftCB: NSButton, controlCB: NSButton,
         currentShortcutDisplayLabel: NSTextField
@@ -597,9 +631,6 @@ class ViewController: NSViewController,
             let autohideEnabled = autohideCB.state == .on
             UserDefaults.standard.set(autohideEnabled, forKey: AppDelegate.autohideWindowKey)
             NSLog("VC: Settings - Autohide window set to: \(autohideEnabled)")
-
-            // Removed saving logic for Idle Time
-            // if let idleTimeValue = Double(idleTimeTF.stringValue) { ... }
 
             var newModifiers = NSEvent.ModifierFlags()
             if optionCB.state == .on { newModifiers.insert(.option) }
@@ -615,40 +646,37 @@ class ViewController: NSViewController,
                 finalKeyCharacter = String(rawKeyString.prefix(1)).uppercased()
                 
                 switch finalKeyCharacter {
-                    case ".": finalKeyCode = UInt16(kVK_ANSI_Period)
-                    case ",": finalKeyCode = UInt16(kVK_ANSI_Comma)
-                    case ";": finalKeyCode = UInt16(kVK_ANSI_Semicolon)
-                    case "'": finalKeyCode = UInt16(kVK_ANSI_Quote)
-                    case "/": finalKeyCode = UInt16(kVK_ANSI_Slash)
-                    case "\\": finalKeyCode = UInt16(kVK_ANSI_Backslash)
-                    case "`": finalKeyCode = UInt16(kVK_ANSI_Grave)
-                    case "-": finalKeyCode = UInt16(kVK_ANSI_Minus)
-                    case "=": finalKeyCode = UInt16(kVK_ANSI_Equal)
-                    case "[": finalKeyCode = UInt16(kVK_ANSI_LeftBracket)
-                    case "]": finalKeyCode = UInt16(kVK_ANSI_RightBracket)
-                    case "A": finalKeyCode = UInt16(kVK_ANSI_A); case "B": finalKeyCode = UInt16(kVK_ANSI_B)
-                    case "C": finalKeyCode = UInt16(kVK_ANSI_C); case "D": finalKeyCode = UInt16(kVK_ANSI_D)
-                    case "E": finalKeyCode = UInt16(kVK_ANSI_E); case "F": finalKeyCode = UInt16(kVK_ANSI_F)
-                    case "G": finalKeyCode = UInt16(kVK_ANSI_G); case "H": finalKeyCode = UInt16(kVK_ANSI_H)
-                    case "I": finalKeyCode = UInt16(kVK_ANSI_I); case "J": finalKeyCode = UInt16(kVK_ANSI_J)
-                    case "K": finalKeyCode = UInt16(kVK_ANSI_K); case "L": finalKeyCode = UInt16(kVK_ANSI_L)
-                    case "M": finalKeyCode = UInt16(kVK_ANSI_M); case "N": finalKeyCode = UInt16(kVK_ANSI_N)
+                    case "1": finalKeyCode = UInt16(kVK_ANSI_1); case "2": finalKeyCode = UInt16(kVK_ANSI_2)
+                    case "3": finalKeyCode = UInt16(kVK_ANSI_3); case "4": finalKeyCode = UInt16(kVK_ANSI_4)
+                    case "5": finalKeyCode = UInt16(kVK_ANSI_5); case "6": finalKeyCode = UInt16(kVK_ANSI_6)
+                    case "7": finalKeyCode = UInt16(kVK_ANSI_7); case "8": finalKeyCode = UInt16(kVK_ANSI_8)
+                    case "9": finalKeyCode = UInt16(kVK_ANSI_9); case "0": finalKeyCode = UInt16(kVK_ANSI_0)
+                    case "Q": finalKeyCode = UInt16(kVK_ANSI_Q); case "W": finalKeyCode = UInt16(kVK_ANSI_W)
+                    case "E": finalKeyCode = UInt16(kVK_ANSI_E); case "R": finalKeyCode = UInt16(kVK_ANSI_R)
+                    case "T": finalKeyCode = UInt16(kVK_ANSI_T); case "Y": finalKeyCode = UInt16(kVK_ANSI_Y)
+                    case "U": finalKeyCode = UInt16(kVK_ANSI_U); case "I": finalKeyCode = UInt16(kVK_ANSI_I)
                     case "O": finalKeyCode = UInt16(kVK_ANSI_O); case "P": finalKeyCode = UInt16(kVK_ANSI_P)
-                    case "Q": finalKeyCode = UInt16(kVK_ANSI_Q); case "R": finalKeyCode = UInt16(kVK_ANSI_R)
-                    case "S": finalKeyCode = UInt16(kVK_ANSI_S); case "T": finalKeyCode = UInt16(kVK_ANSI_T)
-                    case "U": finalKeyCode = UInt16(kVK_ANSI_U); case "V": finalKeyCode = UInt16(kVK_ANSI_V)
-                    case "W": finalKeyCode = UInt16(kVK_ANSI_W); case "X": finalKeyCode = UInt16(kVK_ANSI_X)
-                    case "Y": finalKeyCode = UInt16(kVK_ANSI_Y); case "Z": finalKeyCode = UInt16(kVK_ANSI_Z)
-                    case "0": finalKeyCode = UInt16(kVK_ANSI_0); case "1": finalKeyCode = UInt16(kVK_ANSI_1)
-                    case "2": finalKeyCode = UInt16(kVK_ANSI_2); case "3": finalKeyCode = UInt16(kVK_ANSI_3)
-                    case "4": finalKeyCode = UInt16(kVK_ANSI_4); case "5": finalKeyCode = UInt16(kVK_ANSI_5)
-                    case "6": finalKeyCode = UInt16(kVK_ANSI_6); case "7": finalKeyCode = UInt16(kVK_ANSI_7)
-                    case "8": finalKeyCode = UInt16(kVK_ANSI_8); case "9": finalKeyCode = UInt16(kVK_ANSI_9)
+                    case "A": finalKeyCode = UInt16(kVK_ANSI_A); case "S": finalKeyCode = UInt16(kVK_ANSI_S)
+                    case "D": finalKeyCode = UInt16(kVK_ANSI_D); case "F": finalKeyCode = UInt16(kVK_ANSI_F)
+                    case "G": finalKeyCode = UInt16(kVK_ANSI_G); case "H": finalKeyCode = UInt16(kVK_ANSI_H)
+                    case "J": finalKeyCode = UInt16(kVK_ANSI_J); case "K": finalKeyCode = UInt16(kVK_ANSI_K)
+                    case "L": finalKeyCode = UInt16(kVK_ANSI_L)
+                    case "Z": finalKeyCode = UInt16(kVK_ANSI_Z); case "X": finalKeyCode = UInt16(kVK_ANSI_X)
+                    case "C": finalKeyCode = UInt16(kVK_ANSI_C); case "V": finalKeyCode = UInt16(kVK_ANSI_V)
+                    case "B": finalKeyCode = UInt16(kVK_ANSI_B); case "N": finalKeyCode = UInt16(kVK_ANSI_N)
+                    case "M": finalKeyCode = UInt16(kVK_ANSI_M)
+                    case ".": finalKeyCode = UInt16(kVK_ANSI_Period); case ",": finalKeyCode = UInt16(kVK_ANSI_Comma)
+                    case ";": finalKeyCode = UInt16(kVK_ANSI_Semicolon); case "'": finalKeyCode = UInt16(kVK_ANSI_Quote)
+                    case "/": finalKeyCode = UInt16(kVK_ANSI_Slash); case "\\": finalKeyCode = UInt16(kVK_ANSI_Backslash)
+                    case "`": finalKeyCode = UInt16(kVK_ANSI_Grave); case "-": finalKeyCode = UInt16(kVK_ANSI_Minus)
+                    case "=": finalKeyCode = UInt16(kVK_ANSI_Equal); case "[": finalKeyCode = UInt16(kVK_ANSI_LeftBracket)
+                    case "]": finalKeyCode = UInt16(kVK_ANSI_RightBracket)
                     case "F1": finalKeyCode = UInt16(kVK_F1); case "F2": finalKeyCode = UInt16(kVK_F2)
                     default:
-                        NSLog("VC: Warning - Key character '\(finalKeyCharacter)' not in simple map. Shortcut might not work as expected or will be unset if mapping fails.")
+                        NSLog("VC: Warning - Key character '\(finalKeyCharacter)' not in simple map. Shortcut will be disabled if mapping fails.")
                         finalKeyCode = UInt16.max
                         finalKeyCharacter = ""
+                        newModifiers = []
                 }
             } else {
                 finalKeyCode = UInt16.max
@@ -685,24 +713,13 @@ class ViewController: NSViewController,
         } else if let url = URL(string: trimmedUrl), (url.scheme == "http" || url.scheme == "https") {
             UserDefaults.standard.set(trimmedUrl, forKey: key)
             assignToInstanceVar(trimmedUrl)
-            webView.load(URLRequest(url: url))
+            if webView.url?.absoluteString != trimmedUrl {
+                webView.load(URLRequest(url: url))
+            }
              NSLog("VC: Settings - \(key) updated to: \(trimmedUrl)")
         } else {
-            NSLog("VC: Settings - Invalid URL for \(key): '\(trimmedUrl)'. Not saved.")
+            NSLog("VC: Settings - Invalid URL for \(key): '\(trimmedUrl)'. Not saved. Previous URL remains.")
         }
     }
 }
 
-// Helper extension for NumberFormatter (can be removed if no longer needed by other parts of the app)
-// extension NumberFormatter {
-//    static func decimalFormatter(minimum: NSNumber? = nil, maximum: NSNumber? = nil, minimumFractionDigits: Int = 0, maximumFractionDigits: Int = 2) -> NumberFormatter {
-//        let formatter = NumberFormatter()
-//        formatter.numberStyle = .decimal
-//        formatter.minimum = minimum
-//        formatter.maximum = maximum
-//        formatter.minimumFractionDigits = minimumFractionDigits
-//        formatter.maximumFractionDigits = maximumFractionDigits
-//        formatter.allowsFloats = true
-//        return formatter
-//    }
-// }

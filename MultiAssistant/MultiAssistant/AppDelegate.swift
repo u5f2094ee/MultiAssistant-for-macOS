@@ -351,7 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .informational
         alert.messageText = "MultiAssistant"
         alert.informativeText = """
-        Version 1.0
+        Version 1.1
         Developed by ZhangZheng & Gemini 2.5 Pro
         """
         alert.icon = finalIcon
