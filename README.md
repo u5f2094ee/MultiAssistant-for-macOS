@@ -3,8 +3,7 @@
 ---
 ## Screenshot
 
-![MultiAssistant Screenshot 1 1](https://github.com/user-attachments/assets/0b972718-7e75-4b25-9c32-7afba6101f61)
-
+![MacOS Screenshot 2025-05-30 at 22 23 40](https://github.com/user-attachments/assets/e8624ed6-1e41-4686-9762-44ea6516dc1a)
 
 
 ---
