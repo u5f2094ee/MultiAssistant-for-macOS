@@ -14,7 +14,7 @@ class ViewController: NSViewController,
     // Configuration constants
     private let defaultUrlString1 = "https://chat.openai.com/"
     private let defaultUrlString2 = "https://gemini.google.com/app"
-    private let cornerRadiusValue: CGFloat = 12.0
+    private let cornerRadiusValue: CGFloat = 25.0
     private let zoomStep: CGFloat   = 0.1
     private let minZoom: CGFloat    = 0.5
     private let maxZoom: CGFloat    = 3.0
@@ -85,7 +85,7 @@ class ViewController: NSViewController,
         }
 
         // Add a border directly to the view's layer.
-        view.layer?.borderWidth = 1.5 // Set desired border width (e.g., 1.0, 1.5, 2.0 points)
+        view.layer?.borderWidth = 1.9 // Set desired border width (e.g., 1.0, 1.5, 2.0 points)
         view.layer?.borderColor = NSColor.separatorColor.cgColor // Adapts to light/dark mode
         
         NSLog("VC: Container layer configured with custom border.")
