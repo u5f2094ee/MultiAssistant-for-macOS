@@ -23,8 +23,9 @@ class ViewController: NSViewController,
 
     // UserDefaults keys
     static let windowAlphaKey = "windowAlphaKey_MultiAssistant_v1"
-    static let webViewAlphaKey = "webViewAlphaKey_MultiAssistant_v1" // New key for web view alpha
-    static let windowDesktopAssignmentKey = "windowDesktopAssignmentKey_v2" // MODIFIED: Renamed for clarity, new version
+    static let webViewAlphaKey = "webViewAlphaKey_MultiAssistant_v1"
+    static let windowDesktopAssignmentKey = "windowDesktopAssignmentKey_v2"
+    static let globalBoldFontKey = "globalBoldFontEnabledKey_MultiAssistant_v1" // ADDED: Key for global bold font
 
     // Runtime state
     private var webView1ZoomScale: CGFloat = 1.0
@@ -32,8 +33,9 @@ class ViewController: NSViewController,
     private var urlString1: String!
     private var urlString2: String!
     private var currentWindowAlpha: CGFloat = 1.0
-    private var currentWebViewAlpha: CGFloat = 0.8 // New state for web view alpha, default to 80%
-    private var currentDesktopAssignmentRawValue: UInt = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue // ADDED: Store the raw value
+    private var currentWebViewAlpha: CGFloat = 0.8
+    private var currentDesktopAssignmentRawValue: UInt = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
+    private var globalBoldFontEnabled: Bool = false // ADDED: State for global bold font
 
     private var webViewsReloadingAfterTermination: Set<WKWebView> = []
     private var activeWebView: WKWebView { webView1.isHidden ? webView2 : webView1 }
@@ -60,7 +62,7 @@ class ViewController: NSViewController,
         NSLog("VC: viewDidAppear. Window isVisible: \(window.isVisible), isKey: \(window.isKeyWindow), AppIsActive: \(NSApp.isActive)")
 
         if !windowChromeConfigured {
-            setupWindowChrome() // This will now apply the loaded desktop assignment
+            setupWindowChrome()
             windowChromeConfigured = true
         }
 
@@ -113,20 +115,19 @@ class ViewController: NSViewController,
     private func setupWebViews() {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        // Initial transparent background script - will be overridden by global bold if active
         let cssString = "html, body { background-color: transparent !important; }"
         let userScript = WKUserScript(source: cssString, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         config.userContentController.addUserScript(userScript)
+
 
         webView1 = WKWebView(frame: .zero, configuration: config)
         webView2 = WKWebView(frame: .zero, configuration: config)
 
         [webView1, webView2].forEach { wv in
             wv.setValue(false, forKey: "drawsBackground")
-
-            // Apply the loaded or default web view alpha
             wv.alphaValue = currentWebViewAlpha
             NSLog("VC: Set WKWebView alphaValue to \(currentWebViewAlpha) for semi-transparent web content.")
-
             wv.navigationDelegate = self
             wv.uiDelegate = self
             wv.translatesAutoresizingMaskIntoConstraints = false
@@ -161,11 +162,8 @@ class ViewController: NSViewController,
         window.isMovableByWindowBackground = true
         window.hasShadow = true
         window.setFrameAutosaveName(windowAutosaveName)
-
-        // MODIFIED: Apply loaded desktop assignment behavior
-        window.collectionBehavior = NSWindow.CollectionBehavior(rawValue: currentDesktopAssignmentRawValue) //
+        window.collectionBehavior = NSWindow.CollectionBehavior(rawValue: currentDesktopAssignmentRawValue)
         NSLog("VC: setupWindowChrome - Set window collectionBehavior to rawValue: \(currentDesktopAssignmentRawValue)")
-
 
         if !window.setFrameUsingName(window.frameAutosaveName) || window.frame.width < 100 || window.frame.height < 100 {
             NSLog("VC: setupWindowChrome - Setting default window frame (800x600).")
@@ -191,7 +189,7 @@ class ViewController: NSViewController,
     private func setupKeyboardShortcuts() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers else { return event }
-            if self.view.window?.attachedSheet != nil { return event }
+            if self.view.window?.attachedSheet != nil { return event } // Ignore if a sheet (like settings) is open
             switch key.lowercased() {
             case "1": self.togglePage(); return nil
             case "r": self.refreshCurrentPage(); return nil
@@ -225,27 +223,74 @@ class ViewController: NSViewController,
         if d.object(forKey: ViewController.webViewAlphaKey) != nil {
             currentWebViewAlpha = CGFloat(d.double(forKey: ViewController.webViewAlphaKey))
         } else {
-            currentWebViewAlpha = 0.8
+            currentWebViewAlpha = 0.8 // Default semi-transparent web content
             d.set(currentWebViewAlpha, forKey: ViewController.webViewAlphaKey)
         }
         currentWebViewAlpha = clamp(currentWebViewAlpha, min: 0.1, max: 1.0)
 
-        // ADDED: Load window desktop assignment setting
         if d.object(forKey: ViewController.windowDesktopAssignmentKey) != nil {
             currentDesktopAssignmentRawValue = UInt(d.integer(forKey: ViewController.windowDesktopAssignmentKey))
         } else {
-            // Default to "All Desktops" which was the previous hardcoded behavior
             currentDesktopAssignmentRawValue = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
             d.set(Int(currentDesktopAssignmentRawValue), forKey: ViewController.windowDesktopAssignmentKey)
         }
+        
+        // ADDED: Load global bold font setting
+        if d.object(forKey: ViewController.globalBoldFontKey) != nil {
+            globalBoldFontEnabled = d.bool(forKey: ViewController.globalBoldFontKey)
+        } else {
+            globalBoldFontEnabled = false // Default to false
+            d.set(globalBoldFontEnabled, forKey: ViewController.globalBoldFontKey)
+        }
 
-        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale), WindowAlpha: \(currentWindowAlpha), WebViewAlpha: \(currentWebViewAlpha), DesktopAssignment: \(currentDesktopAssignmentRawValue)")
+        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale), WindowAlpha: \(currentWindowAlpha), WebViewAlpha: \(currentWebViewAlpha), DesktopAssignment: \(currentDesktopAssignmentRawValue), GlobalBold: \(globalBoldFontEnabled)")
     }
 
     private func loadInitialContent() {
         if let u1 = URL(string: urlString1) { webView1.load(URLRequest(url: u1)) } else { NSLog("VC: Invalid URL1: \(urlString1 ?? "nil")")}
         if let u2 = URL(string: urlString2) { webView2.load(URLRequest(url: u2)) } else { NSLog("VC: Invalid URL2: \(urlString2 ?? "nil")")}
     }
+    
+    // MARK: - Content Styling (Global Bold)
+    // ADDED: Function to apply or remove global bold style
+    private func applyGlobalBoldStyle(to webView: WKWebView) {
+        let js: String
+        if globalBoldFontEnabled {
+            // Inject a style tag that bolds everything, including pseudo-elements
+            js = """
+            var styleElement = document.getElementById('multiAssistantGlobalBoldStyle');
+            if (!styleElement) {
+                styleElement = document.createElement('style');
+                styleElement.id = 'multiAssistantGlobalBoldStyle';
+                document.head.appendChild(styleElement);
+            }
+            styleElement.innerHTML = '*, *::before, *::after { font-weight: bold !important; }';
+            console.log('Global bold style ENABLED for \(webView.url?.absoluteString ?? "current page").');
+            """
+        } else {
+            // Remove the style tag if it exists
+            js = """
+            var styleElement = document.getElementById('multiAssistantGlobalBoldStyle');
+            if (styleElement) {
+                styleElement.parentNode.removeChild(styleElement);
+            }
+            console.log('Global bold style DISABLED (style tag removed) for \(webView.url?.absoluteString ?? "current page").');
+            """
+        }
+        webView.evaluateJavaScript(js) { result, error in
+            if let error = error {
+                NSLog("VC: Error applying global bold style to \(webView.url?.absoluteString ?? "current page"): \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    // ADDED: Helper to update style on both webviews
+    private func updateGlobalBoldStyleForAllWebViews() {
+        applyGlobalBoldStyle(to: webView1)
+        applyGlobalBoldStyle(to: webView2)
+        NSLog("VC: Updated global bold style for all webviews. Enabled: \(globalBoldFontEnabled)")
+    }
+
 
     // MARK: - Focus Handling
     @objc func attemptWebViewFocus() {
@@ -257,10 +302,10 @@ class ViewController: NSViewController,
         if !window.isKeyWindow {
             NSLog("VC: attemptWebViewFocus - Window is NOT key. Attempting to make it key.")
             window.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { // Short delay for window manager
                 NSLog("VC: attemptWebViewFocus (after 0.05s delay) - WindowIsKey: \(window.isKeyWindow)")
                 if window.isKeyWindow { self.proceedWithFirstResponder(for: webViewToFocus, window: window) }
-                else { NSLog("VC: attemptWebViewFocus (delayed) - Window STILL NOT key."); self.proceedWithFirstResponder(for: webViewToFocus, window: window) }
+                else { NSLog("VC: attemptWebViewFocus (delayed) - Window STILL NOT key."); self.proceedWithFirstResponder(for: webViewToFocus, window: window) /* Still try */}
             }
             return
         }
@@ -275,11 +320,12 @@ class ViewController: NSViewController,
             executeJavaScriptFocus(reason: "proceedWithFirstResponder_success")
         } else {
             NSLog("VC: proceedWithFirstResponder - FAILED: Could not make \(webViewName) first responder.")
-            if window.firstResponder != webViewToFocus && window.canBecomeKey {
+            // Fallback if direct webview focus fails
+            if window.firstResponder != webViewToFocus && window.canBecomeKey { // Check if it's not already focused somehow
                  NSLog("VC: proceedWithFirstResponder - Making window's content view (self.view) first responder as a fallback.")
                  if window.makeFirstResponder(self.view) { NSLog("VC: proceedWithFirstResponder - SUCCESS: Made self.view first responder.") }
                  else { NSLog("VC: proceedWithFirstResponder - FAILED: Could not make self.view first responder either.") }
-                 executeJavaScriptFocus(reason: "proceedWithFirstResponder_fallbackFR_self.view")
+                 executeJavaScriptFocus(reason: "proceedWithFirstResponder_fallbackFR_self.view") // Try JS focus anyway
             }
         }
     }
@@ -295,7 +341,7 @@ class ViewController: NSViewController,
                 let focusableElements = ['#prompt-textarea', 'textarea:not([disabled]):not([readonly])', 'input[type="text"]:not([disabled]):not([readonly])', 'input:not([type="hidden"]):not([disabled]):not([readonly])', 'div[contenteditable="true"]:not([disabled])', '[tabindex]:not([tabindex="-1"]):not([disabled])'];
                 let target;
                 for (let selector of focusableElements) { target = document.querySelector(selector); if (target) { console.log('[\(jsReason)] Found target with selector: ' + selector); break; } }
-                if (target) { console.log('[\(jsReason)] Attempting focus/click on: ' + target.tagName + (target.id ? '#' + target.id : '')); if (typeof target.focus === 'function') { target.focus({ preventScroll: false }); } setTimeout(function() { console.log('[\(jsReason)] After attempts. Active element: ' + (document.activeElement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : 'null') + '. Document has focus: ' + document.hasFocus()); }, 100);
+                if (target) { console.log('[\(jsReason)] Attempting focus/click on: ' + target.tagName + (target.id ? '#' + target.id : '')); if (typeof target.focus === 'function') { target.focus({ preventScroll: false }); } setTimeout(function() { console.log('[\(jsReason)] After attempts. Active element: ' + (document.activeE`lement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : 'null') + '. Document has focus: ' + document.hasFocus()); }, 100);
                 } else { console.log('[\(jsReason)] No suitable target found. Focusing body as fallback.'); if (document.body && typeof document.body.focus === 'function') { document.body.focus(); } }
             })();
         """
@@ -310,9 +356,10 @@ class ViewController: NSViewController,
         NSLog("VC: Toggling page.")
         webView1.isHidden.toggle()
         webView2.isHidden.toggle()
-        let currentActiveWebView = activeWebView
+        let currentActiveWebView = activeWebView // get ref before potential view hierarchy changes
         view.addSubview(currentActiveWebView) // Ensure the active one is on top if overlapping views (though they fill bounds)
         applyZoom(to: activeWebView, scale: currentZoom(for: activeWebView))
+        // The global bold style is applied in didFinish, so it should persist or re-apply on new content within the toggled view.
         NSLog("VC: Calling attemptWebViewFocus after page toggle.")
         attemptWebViewFocus()
         NSLog("VC: Active webview is now: \(activeWebView == webView1 ? "WebView1" : "WebView2")")
@@ -320,7 +367,7 @@ class ViewController: NSViewController,
 
     @objc func refreshCurrentPage() {
         NSLog("VC: Refreshing current page: \(activeWebView == webView1 ? "WebView1" : "WebView2")")
-        webViewsReloadingAfterTermination.insert(activeWebView)
+        webViewsReloadingAfterTermination.insert(activeWebView) // Track for potential focus re-attempt
         activeWebView.reload()
     }
 
@@ -357,6 +404,8 @@ class ViewController: NSViewController,
         let webViewName = wv == webView1 ? "WebView1" : "WebView2"
         NSLog("VC: WebView \(webViewName) didFinish navigation. URL: \(wv.url?.absoluteString ?? "N/A").")
         applyZoom(to: wv, scale: currentZoom(for: wv))
+        applyGlobalBoldStyle(to: wv) // ADDED: Apply bold style on content load
+        
         if view.window?.isKeyWindow == true || webViewsReloadingAfterTermination.contains(wv) {
             NSLog("VC: WebView \(webViewName) finished, attempting focus (window is key or was reloading).")
             attemptWebViewFocus()
@@ -368,7 +417,7 @@ class ViewController: NSViewController,
         let webViewName = wv == webView1 ? "WebView1" : "WebView2"
         NSLog("VC: CRITICAL - WebView \(webViewName) content process did terminate. Reloading.")
         webViewsReloadingAfterTermination.insert(wv)
-        wv.reload()
+        wv.reload() // This will trigger didFinish again, where styles are reapplied
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -387,7 +436,7 @@ class ViewController: NSViewController,
         guard let window = view.window else {
             NSLog("VC: OpenSettings - No window. Attempting to show via AppDelegate.")
             (NSApp.delegate as? AppDelegate)?.showWindowAction()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { // Give time for window to appear
                 if self.view.window != nil { self.presentSettingsAlert() }
                 else { NSLog("VC: OpenSettings - Window still not available after delay and AppDelegate action.") }
             }
@@ -397,6 +446,7 @@ class ViewController: NSViewController,
             NSLog("VC: OpenSettings - Window not visible/key. Activating and making key.")
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
+            // Ensure sheet is presented after window is key
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.presentSettingsAlert() }
         } else { presentSettingsAlert() }
     }
@@ -424,7 +474,7 @@ class ViewController: NSViewController,
             control.translatesAutoresizingMaskIntoConstraints = false; control.setContentHuggingPriority(.defaultLow, for: .horizontal); control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let hStack = NSStackView(views: [label, control]); hStack.orientation = .horizontal; hStack.spacing = hStackSpacing; hStack.alignment = alignment
             if let textField = control as? NSTextField { textField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true }
-            if let segmentedControl = control as? NSSegmentedControl { segmentedControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true} // ADDED: Ensure segmented control has enough width
+            if let segmentedControl = control as? NSSegmentedControl { segmentedControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true}
             return hStack
         }
 
@@ -435,21 +485,15 @@ class ViewController: NSViewController,
         let behaviorSectionHeader = createSectionHeader(title: "Window Behavior")
         let autohideCheckbox = NSButton(checkboxWithTitle: "Auto-hide window when application is inactive", target: nil, action: nil); autohideCheckbox.state = UserDefaults.standard.bool(forKey: AppDelegate.autohideWindowKey) ? .on : .off; autohideCheckbox.translatesAutoresizingMaskIntoConstraints = false
         let autohideIndentView = NSView(); autohideIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let autohideControlRow = NSStackView(views: [autohideIndentView, autohideCheckbox]); autohideControlRow.orientation = .horizontal; autohideControlRow.spacing = 0; autohideControlRow.alignment = .firstBaseline
-
-        // ADDED: Desktop Assignment Setting UI
+        
         let desktopAssignmentControl = NSSegmentedControl(labels: ["All Desktops", "This Desktop", "Standard"], trackingMode: .selectOne, target: nil, action: nil)
         desktopAssignmentControl.segmentStyle = .texturedRounded
-        if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue {
-            desktopAssignmentControl.selectedSegment = 0
-        } else if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.moveToActiveSpace.rawValue {
-            desktopAssignmentControl.selectedSegment = 1
-        } else { // Standard (empty or managed)
-            desktopAssignmentControl.selectedSegment = 2
-        }
+        if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue { desktopAssignmentControl.selectedSegment = 0
+        } else if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.moveToActiveSpace.rawValue { desktopAssignmentControl.selectedSegment = 1
+        } else { desktopAssignmentControl.selectedSegment = 2 }
         let desktopAssignmentRow = createSettingRow(labelString: "Assign Window To:", control: desktopAssignmentControl, alignment: .centerY)
 
-
-        let appearanceSectionHeader = createSectionHeader(title: "Window Appearance")
+        let appearanceSectionHeader = createSectionHeader(title: "Window Appearance & Content")
         let windowAlphaSlider = NSSlider(value: Double(currentWindowAlpha), minValue: 0.1, maxValue: 1.0, target: nil, action: nil); windowAlphaSlider.allowsTickMarkValuesOnly = false; windowAlphaSlider.numberOfTickMarks = 10; windowAlphaSlider.translatesAutoresizingMaskIntoConstraints = false
         let currentWindowAlphaDisplayLabel = NSTextField(labelWithString: String(format: "Overall Opacity: %.0f%%", currentWindowAlpha * 100)); currentWindowAlphaDisplayLabel.isEditable = false; currentWindowAlphaDisplayLabel.isSelectable = false; currentWindowAlphaDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; currentWindowAlphaDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let windowAlphaSliderAndDisplay = NSStackView(views: [windowAlphaSlider, currentWindowAlphaDisplayLabel]); windowAlphaSliderAndDisplay.orientation = .horizontal; windowAlphaSliderAndDisplay.spacing = hStackSpacing; windowAlphaSliderAndDisplay.alignment = .centerY
@@ -459,6 +503,14 @@ class ViewController: NSViewController,
         let currentWebViewAlphaDisplayLabel = NSTextField(labelWithString: String(format: "Content Opacity: %.0f%%", currentWebViewAlpha * 100)); currentWebViewAlphaDisplayLabel.isEditable = false; currentWebViewAlphaDisplayLabel.isSelectable = false; currentWebViewAlphaDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; currentWebViewAlphaDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let webViewAlphaSliderAndDisplay = NSStackView(views: [webViewAlphaSlider, currentWebViewAlphaDisplayLabel]); webViewAlphaSliderAndDisplay.orientation = .horizontal; webViewAlphaSliderAndDisplay.spacing = hStackSpacing; webViewAlphaSliderAndDisplay.alignment = .centerY
         let webViewAlphaRow = createSettingRow(labelString: "Web Page Opacity:", control: webViewAlphaSliderAndDisplay, alignment: .centerY)
+        
+        // ADDED: Global Bold Font Checkbox UI
+        let globalBoldFontCheckbox = NSButton(checkboxWithTitle: "Force Bold Font Style on Web Pages", target: nil, action: nil)
+        globalBoldFontCheckbox.state = globalBoldFontEnabled ? .on : .off
+        globalBoldFontCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        let boldFontIndentView = NSView(); boldFontIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true
+        let boldFontRow = NSStackView(views: [boldFontIndentView, globalBoldFontCheckbox])
+        boldFontRow.orientation = .horizontal; boldFontRow.spacing = 0; boldFontRow.alignment = .firstBaseline
 
 
         let globalShortcutSectionHeader = createSectionHeader(title: "Global Toggle Shortcut (Show/Hide Window)")
@@ -477,10 +529,11 @@ class ViewController: NSViewController,
         mainVerticalStackView.addArrangedSubview(urlSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: urlSectionHeader); mainVerticalStackView.addArrangedSubview(url1Row); mainVerticalStackView.addArrangedSubview(url2Row); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: url2Row); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
         mainVerticalStackView.addArrangedSubview(behaviorSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: behaviorSectionHeader)
         mainVerticalStackView.addArrangedSubview(autohideControlRow)
-        mainVerticalStackView.addArrangedSubview(desktopAssignmentRow) // ADDED: Desktop assignment row
+        mainVerticalStackView.addArrangedSubview(desktopAssignmentRow)
         mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: desktopAssignmentRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-
-        mainVerticalStackView.addArrangedSubview(appearanceSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: appearanceSectionHeader); mainVerticalStackView.addArrangedSubview(windowAlphaRow); mainVerticalStackView.addArrangedSubview(webViewAlphaRow); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: webViewAlphaRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
+        mainVerticalStackView.addArrangedSubview(appearanceSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: appearanceSectionHeader); mainVerticalStackView.addArrangedSubview(windowAlphaRow); mainVerticalStackView.addArrangedSubview(webViewAlphaRow)
+        mainVerticalStackView.addArrangedSubview(boldFontRow) // ADDED: Global bold font checkbox to UI stack
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: boldFontRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
         mainVerticalStackView.addArrangedSubview(globalShortcutSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: globalShortcutSectionHeader); mainVerticalStackView.addArrangedSubview(currentShortcutRow); mainVerticalStackView.addArrangedSubview(keyRow); mainVerticalStackView.addArrangedSubview(modifiersRow); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: modifiersRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
         mainVerticalStackView.addArrangedSubview(otherShortcutsSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: otherShortcutsSectionHeader); mainVerticalStackView.addArrangedSubview(togglePageRow)
         mainVerticalStackView.translatesAutoresizingMaskIntoConstraints = false; mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: 10); mainVerticalStackView.layoutSubtreeIfNeeded()
@@ -491,9 +544,10 @@ class ViewController: NSViewController,
 
         alert.beginSheetModal(for: window) { response in
             self.handleSettingsAlertResponse(response, alert: alert, url1TF: url1TextField, url2TF: url2TextField, autohideCB: autohideCheckbox,
-                                             desktopAssignmentControl: desktopAssignmentControl, // ADDED
+                                             desktopAssignmentControl: desktopAssignmentControl,
                                              windowAlphaSlider: windowAlphaSlider, windowAlphaDisplayLabel: currentWindowAlphaDisplayLabel,
                                              webViewAlphaSlider: webViewAlphaSlider, webViewAlphaDisplayLabel: currentWebViewAlphaDisplayLabel,
+                                             globalBoldFontCB: globalBoldFontCheckbox, // ADDED: Pass checkbox
                                              keyTF: keyTextField, optionCB: optionCheckbox, commandCB: commandCheckbox, shiftCB: shiftCheckbox, controlCB: controlCheckbox, currentShortcutDisplayLabel: currentShortcutDisplayLabel)
         }
     }
@@ -501,37 +555,29 @@ class ViewController: NSViewController,
     private func handleSettingsAlertResponse(
         _ response: NSApplication.ModalResponse, alert: NSAlert,
         url1TF: NSTextField, url2TF: NSTextField, autohideCB: NSButton,
-        desktopAssignmentControl: NSSegmentedControl, // ADDED
+        desktopAssignmentControl: NSSegmentedControl,
         windowAlphaSlider: NSSlider, windowAlphaDisplayLabel: NSTextField,
         webViewAlphaSlider: NSSlider, webViewAlphaDisplayLabel: NSTextField,
+        globalBoldFontCB: NSButton, // ADDED: Receive checkbox
         keyTF: NSTextField, optionCB: NSButton, commandCB: NSButton, shiftCB: NSButton, controlCB: NSButton, currentShortcutDisplayLabel: NSTextField
     ) {
-        if response == .alertFirstButtonReturn {
+        if response == .alertFirstButtonReturn { // "Save Changes"
             NSLog("VC: Settings Save button clicked.")
             self.saveSettings(urlString: url1TF.stringValue, forKey: "customURL1_MultiAssistant_v1", defaultURL: self.defaultUrlString1, webView: self.webView1) { self.urlString1 = $0 }
             self.saveSettings(urlString: url2TF.stringValue, forKey: "customURL2_MultiAssistant_v1", defaultURL: self.defaultUrlString2, webView: self.webView2) { self.urlString2 = $0 }
             let autohideEnabled = autohideCB.state == .on; UserDefaults.standard.set(autohideEnabled, forKey: AppDelegate.autohideWindowKey); NSLog("VC: Settings - Autohide window set to: \(autohideEnabled)")
 
-            // ADDED: Handle Desktop Assignment
             let selectedSegment = desktopAssignmentControl.selectedSegment
-            var newDesktopAssignmentRawValue: UInt
-            var assignmentDescription: String
+            var newDesktopAssignmentRawValue: UInt; var assignmentDescription: String
             switch selectedSegment {
-            case 0: // All Desktops
-                newDesktopAssignmentRawValue = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
-                assignmentDescription = "All Desktops"
-            case 1: // This Desktop
-                newDesktopAssignmentRawValue = NSWindow.CollectionBehavior.moveToActiveSpace.rawValue
-                assignmentDescription = "This Desktop Only"
-            default: // Standard (case 2 or any other)
-                newDesktopAssignmentRawValue = NSWindow.CollectionBehavior().rawValue // Empty set, effectively default/managed
-                assignmentDescription = "Standard Behavior"
+            case 0: newDesktopAssignmentRawValue = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue; assignmentDescription = "All Desktops"
+            case 1: newDesktopAssignmentRawValue = NSWindow.CollectionBehavior.moveToActiveSpace.rawValue; assignmentDescription = "This Desktop Only"
+            default: newDesktopAssignmentRawValue = NSWindow.CollectionBehavior().rawValue; assignmentDescription = "Standard Behavior"
             }
             currentDesktopAssignmentRawValue = newDesktopAssignmentRawValue
             UserDefaults.standard.set(Int(newDesktopAssignmentRawValue), forKey: ViewController.windowDesktopAssignmentKey)
             view.window?.collectionBehavior = NSWindow.CollectionBehavior(rawValue: newDesktopAssignmentRawValue)
             NSLog("VC: Settings - Window desktop assignment set to: \(assignmentDescription) (RawValue: \(newDesktopAssignmentRawValue))")
-
 
             let newWindowAlphaValue = clamp(CGFloat(windowAlphaSlider.doubleValue), min: 0.1, max: 1.0)
             currentWindowAlpha = newWindowAlphaValue
@@ -546,12 +592,22 @@ class ViewController: NSViewController,
             [webView1, webView2].forEach { $0?.alphaValue = newWebViewAlphaValue }
             webViewAlphaDisplayLabel.stringValue = String(format: "Content Opacity: %.0f%%", newWebViewAlphaValue * 100)
             NSLog("VC: Settings - Web View alpha set to: \(newWebViewAlphaValue)")
+            
+            // ADDED: Handle Global Bold Font Setting
+            let newBoldFontEnabled = globalBoldFontCB.state == .on
+            if newBoldFontEnabled != self.globalBoldFontEnabled { // Only update if changed
+                self.globalBoldFontEnabled = newBoldFontEnabled
+                UserDefaults.standard.set(self.globalBoldFontEnabled, forKey: ViewController.globalBoldFontKey)
+                NSLog("VC: Settings - Global Bold Font Style set to: \(self.globalBoldFontEnabled)")
+                self.updateGlobalBoldStyleForAllWebViews() // Apply immediately
+            }
 
 
             var newModifiers = NSEvent.ModifierFlags(); if optionCB.state == .on { newModifiers.insert(.option) }; if commandCB.state == .on { newModifiers.insert(.command) }; if shiftCB.state == .on { newModifiers.insert(.shift) }; if controlCB.state == .on { newModifiers.insert(.control) }
             let rawKeyString = keyTF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); var finalKeyCode: UInt16 = UInt16.max; var finalKeyCharacter: String = ""
             if !rawKeyString.isEmpty {
-                finalKeyCharacter = String(rawKeyString.prefix(1)).uppercased()
+                finalKeyCharacter = String(rawKeyString.prefix(1)).uppercased() // Take first char, uppercase it
+                // Map common characters to key codes
                 switch finalKeyCharacter {
                     case "1": finalKeyCode = UInt16(kVK_ANSI_1); case "2": finalKeyCode = UInt16(kVK_ANSI_2); case "3": finalKeyCode = UInt16(kVK_ANSI_3); case "4": finalKeyCode = UInt16(kVK_ANSI_4); case "5": finalKeyCode = UInt16(kVK_ANSI_5); case "6": finalKeyCode = UInt16(kVK_ANSI_6); case "7": finalKeyCode = UInt16(kVK_ANSI_7); case "8": finalKeyCode = UInt16(kVK_ANSI_8); case "9": finalKeyCode = UInt16(kVK_ANSI_9); case "0": finalKeyCode = UInt16(kVK_ANSI_0)
                     case "Q": finalKeyCode = UInt16(kVK_ANSI_Q); case "W": finalKeyCode = UInt16(kVK_ANSI_W); case "E": finalKeyCode = UInt16(kVK_ANSI_E); case "R": finalKeyCode = UInt16(kVK_ANSI_R); case "T": finalKeyCode = UInt16(kVK_ANSI_T); case "Y": finalKeyCode = UInt16(kVK_ANSI_Y); case "U": finalKeyCode = UInt16(kVK_ANSI_U); case "I": finalKeyCode = UInt16(kVK_ANSI_I); case "O": finalKeyCode = UInt16(kVK_ANSI_O); case "P": finalKeyCode = UInt16(kVK_ANSI_P)
@@ -559,12 +615,16 @@ class ViewController: NSViewController,
                     case "Z": finalKeyCode = UInt16(kVK_ANSI_Z); case "X": finalKeyCode = UInt16(kVK_ANSI_X); case "C": finalKeyCode = UInt16(kVK_ANSI_C); case "V": finalKeyCode = UInt16(kVK_ANSI_V); case "B": finalKeyCode = UInt16(kVK_ANSI_B); case "N": finalKeyCode = UInt16(kVK_ANSI_N); case "M": finalKeyCode = UInt16(kVK_ANSI_M)
                     case ".": finalKeyCode = UInt16(kVK_ANSI_Period); case ",": finalKeyCode = UInt16(kVK_ANSI_Comma); case ";": finalKeyCode = UInt16(kVK_ANSI_Semicolon); case "'": finalKeyCode = UInt16(kVK_ANSI_Quote); case "/": finalKeyCode = UInt16(kVK_ANSI_Slash); case "\\": finalKeyCode = UInt16(kVK_ANSI_Backslash)
                     case "`": finalKeyCode = UInt16(kVK_ANSI_Grave); case "-": finalKeyCode = UInt16(kVK_ANSI_Minus); case "=": finalKeyCode = UInt16(kVK_ANSI_Equal); case "[": finalKeyCode = UInt16(kVK_ANSI_LeftBracket); case "]": finalKeyCode = UInt16(kVK_ANSI_RightBracket)
-                    default: NSLog("VC: Warning - Key character '\(finalKeyCharacter)' not in simple map."); if newModifiers.isEmpty { finalKeyCode = UInt16.max; finalKeyCharacter = "" } else { finalKeyCode = UInt16.max; finalKeyCharacter = ""; NSLog("VC: Unknown key character '\(finalKeyCharacter)' with modifiers. Clearing key.") }
+                    default: NSLog("VC: Warning - Key character '\(finalKeyCharacter)' not in simple map. If this is an F-key or special key, it might not be directly representable this way for display but could still work if a valid keycode was previously saved or if you intend to clear."); if newModifiers.isEmpty { finalKeyCode = UInt16.max; finalKeyCharacter = "" } else { finalKeyCode = UInt16.max; finalKeyCharacter = ""; NSLog("VC: Unknown key character '\(finalKeyCharacter)' with modifiers. Clearing key.") } // Default to no key if char unknown and modifiers present
                 }
-            } else { finalKeyCode = UInt16.max; finalKeyCharacter = ""; newModifiers = [] }
+            } else { // No key character entered, effectively means "no shortcut" or "clear shortcut"
+                finalKeyCode = UInt16.max // Sentinel for "no key"
+                finalKeyCharacter = ""
+                newModifiers = [] // Typically, no key means no modifiers either.
+            }
             let defaults = UserDefaults.standard; defaults.set(NSNumber(value: finalKeyCode), forKey: AppDelegate.shortcutKeyCodeKey); defaults.set(newModifiers.rawValue, forKey: AppDelegate.shortcutModifierFlagsKey); defaults.set(finalKeyCharacter, forKey: AppDelegate.shortcutKeyCharacterKey); NSLog("VC: Saved shortcut - KeyCode: \(finalKeyCode), Modifiers: \(newModifiers.rawValue), Char: '\(finalKeyCharacter)'")
             if let appDelegate = NSApp.delegate as? AppDelegate { appDelegate.currentShortcutKeyCode = finalKeyCode; appDelegate.currentShortcutModifierFlags = newModifiers; appDelegate.currentShortcutKeyCharacter = finalKeyCharacter; currentShortcutDisplayLabel.stringValue = "Current: \(appDelegate.formattedShortcutString())" }
-            NotificationCenter.default.post(name: .shortcutSettingsChanged, object: nil)
+            NotificationCenter.default.post(name: .shortcutSettingsChanged, object: nil) // Notify AppDelegate
         } else { NSLog("VC: Settings Cancel button clicked or sheet dismissed.") }
     }
 
