@@ -3,7 +3,7 @@
 ---
 ## Screenshot
 
-![MacOS Screenshot 2025-05-30 at 22 23 40](https://github.com/user-attachments/assets/e8624ed6-1e41-4686-9762-44ea6516dc1a)
+![MultiAssistant v1 2 Screenshot](https://github.com/user-attachments/assets/7eac2a76-5053-4d5d-a02a-aeba40c5fbe5)
 
 
 ---
@@ -29,6 +29,7 @@
   - Rounded corners, and full-size content view for a sleek look.
   - No standard title bar buttons; window is movable by dragging the background.
   - Automatically restores the previous window size and position, and retains cookies.
+  - A beautifully styled window with elegant blur and transparency effects with customizable settings.
 - **Focus Management**: Ensures the active web view receives keyboard focus and places the cursor in the input area on show, for immediate typing.
 
 ---
