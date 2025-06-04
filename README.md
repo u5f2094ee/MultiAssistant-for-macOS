@@ -3,7 +3,7 @@
 ---
 ## Screenshot
 
-![MultiAssistant v1 2 Screenshot](https://github.com/user-attachments/assets/7eac2a76-5053-4d5d-a02a-aeba40c5fbe5)
+![MultiAssistant v1 2 Screenshot copy](https://github.com/user-attachments/assets/3cdd1c31-679d-4fc6-bd9c-be472b8bebc5)
 
 
 ---
