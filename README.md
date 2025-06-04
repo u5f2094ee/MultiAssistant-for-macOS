@@ -29,7 +29,7 @@
   - Rounded corners, and full-size content view for a sleek look.
   - No standard title bar buttons; window is movable by dragging the background.
   - Automatically restores the previous window size and position, and retains cookies.
-  - A beautifully styled window with elegant blur and transparency effects with customizable settings.
+  - A beautifully styled window with blur and transparency effects with customizable settings.
 - **Focus Management**: Ensures the active web view receives keyboard focus and places the cursor in the input area on show, for immediate typing.
 
 ---
