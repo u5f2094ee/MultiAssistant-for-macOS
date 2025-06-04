@@ -10,22 +10,31 @@ class ViewController: NSViewController,
     // MARK: - UI Elements & State
     private var webView1: WKWebView!
     private var webView2: WKWebView!
+    private var visualEffectView: NSVisualEffectView!
 
     // Configuration constants
     private let defaultUrlString1 = "https://chat.openai.com/"
     private let defaultUrlString2 = "https://gemini.google.com/app"
-    private let cornerRadiusValue: CGFloat = 25.0
+    private let cornerRadiusValue: CGFloat = 30.0
     private let zoomStep: CGFloat   = 0.1
     private let minZoom: CGFloat    = 0.5
     private let maxZoom: CGFloat    = 3.0
     private let windowAutosaveName = "MultiAssistantMainWindow_v1"
+
+    // UserDefaults keys
+    static let windowAlphaKey = "windowAlphaKey_MultiAssistant_v1"
+    static let webViewAlphaKey = "webViewAlphaKey_MultiAssistant_v1" // New key for web view alpha
+    static let windowDesktopAssignmentKey = "windowDesktopAssignmentKey_v2" // MODIFIED: Renamed for clarity, new version
 
     // Runtime state
     private var webView1ZoomScale: CGFloat = 1.0
     private var webView2ZoomScale: CGFloat = 1.0
     private var urlString1: String!
     private var urlString2: String!
-    
+    private var currentWindowAlpha: CGFloat = 1.0
+    private var currentWebViewAlpha: CGFloat = 0.8 // New state for web view alpha, default to 80%
+    private var currentDesktopAssignmentRawValue: UInt = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue // ADDED: Store the raw value
+
     private var webViewsReloadingAfterTermination: Set<WKWebView> = []
     private var activeWebView: WKWebView { webView1.isHidden ? webView2 : webView1 }
     private var windowChromeConfigured = false
@@ -35,7 +44,8 @@ class ViewController: NSViewController,
         super.viewDidLoad()
         NSLog("VC: viewDidLoad")
         loadSettings()
-        configureContainerLayer() // Configure layer properties first
+        configureContainerLayer()
+        setupVisualEffectView()
         setupWebViews()
         loadInitialContent()
         setupKeyboardShortcuts()
@@ -48,12 +58,12 @@ class ViewController: NSViewController,
             return
         }
         NSLog("VC: viewDidAppear. Window isVisible: \(window.isVisible), isKey: \(window.isKeyWindow), AppIsActive: \(NSApp.isActive)")
-        
+
         if !windowChromeConfigured {
-            setupWindowChrome() // Setup window chrome after view is in a window
+            setupWindowChrome() // This will now apply the loaded desktop assignment
             windowChromeConfigured = true
         }
-        
+
         if window.isKeyWindow {
              NSLog("VC: viewDidAppear - Window is already key. Calling attemptWebViewFocus.")
              attemptWebViewFocus()
@@ -73,36 +83,54 @@ class ViewController: NSViewController,
 
     // MARK: - UI Setup Helpers
     private func configureContainerLayer() {
-        view.wantsLayer = true // Ensure the view is layer-backed
+        view.wantsLayer = true
         view.layer?.cornerRadius = cornerRadiusValue
         view.layer?.masksToBounds = true
-
-        // Set an opaque background color for the main content view.
-        if #available(macOS 10.14, *) {
-            view.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
-        } else {
-            view.layer?.backgroundColor = NSColor.white.cgColor // Fallback for older macOS
-        }
-
-        // Add a border directly to the view's layer.
-        view.layer?.borderWidth = 1.9 // Set desired border width (e.g., 1.0, 1.5, 2.0 points)
-        view.layer?.borderColor = NSColor.separatorColor.cgColor // Adapts to light/dark mode
-        
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        NSLog("VC: Container layer background set to clear for blur effect.")
+        view.layer?.borderWidth = 1.9
+        view.layer?.borderColor = NSColor.separatorColor.cgColor
         NSLog("VC: Container layer configured with custom border.")
+    }
+
+    private func setupVisualEffectView() {
+        visualEffectView = NSVisualEffectView()
+        visualEffectView.translatesAutoresizingMaskIntoConstraints = false
+        visualEffectView.blendingMode = .behindWindow
+        visualEffectView.material = .hudWindow
+        NSLog("VC: VisualEffectView material set to .underWindowBackground.")
+        visualEffectView.state = .active
+        view.addSubview(visualEffectView, positioned: .below, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            visualEffectView.topAnchor.constraint(equalTo: view.topAnchor),
+            visualEffectView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            visualEffectView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            visualEffectView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+        NSLog("VC: VisualEffectView setup complete.")
     }
 
     private func setupWebViews() {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        let cssString = "html, body { background-color: transparent !important; }"
+        let userScript = WKUserScript(source: cssString, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        config.userContentController.addUserScript(userScript)
 
         webView1 = WKWebView(frame: .zero, configuration: config)
         webView2 = WKWebView(frame: .zero, configuration: config)
-        
+
         [webView1, webView2].forEach { wv in
+            wv.setValue(false, forKey: "drawsBackground")
+
+            // Apply the loaded or default web view alpha
+            wv.alphaValue = currentWebViewAlpha
+            NSLog("VC: Set WKWebView alphaValue to \(currentWebViewAlpha) for semi-transparent web content.")
+
             wv.navigationDelegate = self
             wv.uiDelegate = self
             wv.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(wv) // Add to the ViewController's view
+            view.addSubview(wv)
             NSLayoutConstraint.activate([
                 wv.topAnchor.constraint(equalTo: view.topAnchor),
                 wv.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -111,7 +139,7 @@ class ViewController: NSViewController,
             ])
         }
         webView2.isHidden = true
-        NSLog("VC: WebViews setup complete.")
+        NSLog("VC: WebViews setup complete with transparency for blur effect and \(currentWebViewAlpha * 100)% opaque content.")
     }
 
     private func setupWindowChrome() {
@@ -122,21 +150,22 @@ class ViewController: NSViewController,
         NSLog("VC: setupWindowChrome - Configuring window...")
         window.delegate = self
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-        
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
-        
         window.isOpaque = false
         window.backgroundColor = .clear
-        
+        window.alphaValue = currentWindowAlpha
         window.isMovableByWindowBackground = true
         window.hasShadow = true
         window.setFrameAutosaveName(windowAutosaveName)
-        window.collectionBehavior = .canJoinAllSpaces
+
+        // MODIFIED: Apply loaded desktop assignment behavior
+        window.collectionBehavior = NSWindow.CollectionBehavior(rawValue: currentDesktopAssignmentRawValue) //
+        NSLog("VC: setupWindowChrome - Set window collectionBehavior to rawValue: \(currentDesktopAssignmentRawValue)")
+
 
         if !window.setFrameUsingName(window.frameAutosaveName) || window.frame.width < 100 || window.frame.height < 100 {
             NSLog("VC: setupWindowChrome - Setting default window frame (800x600).")
@@ -156,15 +185,13 @@ class ViewController: NSViewController,
         } else {
             NSLog("VC: setupWindowChrome - Could not pass window reference to AppDelegate.")
         }
-        NSLog("VC: setupWindowChrome - Configuration complete.")
+        NSLog("VC: setupWindowChrome - Configuration complete. Initial window alpha: \(currentWindowAlpha)")
     }
 
     private func setupKeyboardShortcuts() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers else { return event }
-            if self.view.window?.attachedSheet != nil {
-                return event
-            }
+            if self.view.window?.attachedSheet != nil { return event }
             switch key.lowercased() {
             case "1": self.togglePage(); return nil
             case "r": self.refreshCurrentPage(); return nil
@@ -186,7 +213,33 @@ class ViewController: NSViewController,
         webView1ZoomScale = (savedZoom1 > 0.01) ? CGFloat(savedZoom1) : 1.0
         let savedZoom2 = d.float(forKey: "webView2ZoomScale_MultiAssistant_v1")
         webView2ZoomScale = (savedZoom2 > 0.01) ? CGFloat(savedZoom2) : 1.0
-        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale)")
+
+        if d.object(forKey: ViewController.windowAlphaKey) != nil {
+            currentWindowAlpha = CGFloat(d.double(forKey: ViewController.windowAlphaKey))
+        } else {
+            currentWindowAlpha = 1.0
+            d.set(currentWindowAlpha, forKey: ViewController.windowAlphaKey)
+        }
+        currentWindowAlpha = clamp(currentWindowAlpha, min: 0.1, max: 1.0)
+
+        if d.object(forKey: ViewController.webViewAlphaKey) != nil {
+            currentWebViewAlpha = CGFloat(d.double(forKey: ViewController.webViewAlphaKey))
+        } else {
+            currentWebViewAlpha = 0.8
+            d.set(currentWebViewAlpha, forKey: ViewController.webViewAlphaKey)
+        }
+        currentWebViewAlpha = clamp(currentWebViewAlpha, min: 0.1, max: 1.0)
+
+        // ADDED: Load window desktop assignment setting
+        if d.object(forKey: ViewController.windowDesktopAssignmentKey) != nil {
+            currentDesktopAssignmentRawValue = UInt(d.integer(forKey: ViewController.windowDesktopAssignmentKey))
+        } else {
+            // Default to "All Desktops" which was the previous hardcoded behavior
+            currentDesktopAssignmentRawValue = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
+            d.set(Int(currentDesktopAssignmentRawValue), forKey: ViewController.windowDesktopAssignmentKey)
+        }
+
+        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale), WindowAlpha: \(currentWindowAlpha), WebViewAlpha: \(currentWebViewAlpha), DesktopAssignment: \(currentDesktopAssignmentRawValue)")
     }
 
     private func loadInitialContent() {
@@ -197,39 +250,26 @@ class ViewController: NSViewController,
     // MARK: - Focus Handling
     @objc func attemptWebViewFocus() {
         NSLog("VC: attemptWebViewFocus called.")
-        guard let window = self.view.window else {
-            NSLog("VC: attemptWebViewFocus - No window.")
-            return
-        }
-        
+        guard let window = self.view.window else { NSLog("VC: attemptWebViewFocus - No window."); return }
         let webViewToFocus = self.activeWebView
         let webViewName = webViewToFocus == self.webView1 ? "WebView1" : "WebView2"
-        
         NSLog("VC: attemptWebViewFocus for \(webViewName). AppIsActive: \(NSApp.isActive), WindowIsKey: \(window.isKeyWindow), WindowIsVisible: \(window.isVisible)")
-
         if !window.isKeyWindow {
             NSLog("VC: attemptWebViewFocus - Window is NOT key. Attempting to make it key.")
             window.makeKeyAndOrderFront(nil)
-            
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 NSLog("VC: attemptWebViewFocus (after 0.05s delay) - WindowIsKey: \(window.isKeyWindow)")
-                if window.isKeyWindow {
-                    self.proceedWithFirstResponder(for: webViewToFocus, window: window)
-                } else {
-                    NSLog("VC: attemptWebViewFocus (delayed) - Window STILL NOT key. Focus might fail or target wrong element.")
-                    self.proceedWithFirstResponder(for: webViewToFocus, window: window)
-                }
+                if window.isKeyWindow { self.proceedWithFirstResponder(for: webViewToFocus, window: window) }
+                else { NSLog("VC: attemptWebViewFocus (delayed) - Window STILL NOT key."); self.proceedWithFirstResponder(for: webViewToFocus, window: window) }
             }
             return
         }
-        
         proceedWithFirstResponder(for: webViewToFocus, window: window)
     }
-    
+
     private func proceedWithFirstResponder(for webViewToFocus: WKWebView, window: NSWindow) {
         let webViewName = webViewToFocus == self.webView1 ? "WebView1" : "WebView2"
         NSLog("VC: proceedWithFirstResponder for \(webViewName). Current FR before: \(String(describing: window.firstResponder))")
-        
         if window.makeFirstResponder(webViewToFocus) {
             NSLog("VC: proceedWithFirstResponder - SUCCESS: Made \(webViewName) first responder.")
             executeJavaScriptFocus(reason: "proceedWithFirstResponder_success")
@@ -237,11 +277,8 @@ class ViewController: NSViewController,
             NSLog("VC: proceedWithFirstResponder - FAILED: Could not make \(webViewName) first responder.")
             if window.firstResponder != webViewToFocus && window.canBecomeKey {
                  NSLog("VC: proceedWithFirstResponder - Making window's content view (self.view) first responder as a fallback.")
-                 if window.makeFirstResponder(self.view) {
-                    NSLog("VC: proceedWithFirstResponder - SUCCESS: Made self.view first responder.")
-                 } else {
-                    NSLog("VC: proceedWithFirstResponder - FAILED: Could not make self.view first responder either.")
-                 }
+                 if window.makeFirstResponder(self.view) { NSLog("VC: proceedWithFirstResponder - SUCCESS: Made self.view first responder.") }
+                 else { NSLog("VC: proceedWithFirstResponder - FAILED: Could not make self.view first responder either.") }
                  executeJavaScriptFocus(reason: "proceedWithFirstResponder_fallbackFR_self.view")
             }
         }
@@ -252,38 +289,14 @@ class ViewController: NSViewController,
         let webViewName = webViewToFocus == self.webView1 ? "WebView1" : "WebView2"
         let jsReason = "JS Focus Attempt - \(reason)"
         NSLog("VC: executeJavaScriptFocus for \(webViewName) - Reason: \(reason)")
-        
         let javascript = """
             (function() {
                 console.log('[\(jsReason)] Starting. document.hasFocus(): ' + document.hasFocus() + ', activeElement: ' + (document.activeElement ? document.activeElement.tagName : 'null'));
-                let focusableElements = [
-                    '#prompt-textarea', 
-                    'textarea:not([disabled]):not([readonly])',
-                    'input[type="text"]:not([disabled]):not([readonly])',
-                    'input:not([type="hidden"]):not([disabled]):not([readonly])', 
-                    'div[contenteditable="true"]:not([disabled])',
-                    '[tabindex]:not([tabindex="-1"]):not([disabled])' 
-                ];
+                let focusableElements = ['#prompt-textarea', 'textarea:not([disabled]):not([readonly])', 'input[type="text"]:not([disabled]):not([readonly])', 'input:not([type="hidden"]):not([disabled]):not([readonly])', 'div[contenteditable="true"]:not([disabled])', '[tabindex]:not([tabindex="-1"]):not([disabled])'];
                 let target;
-                for (let selector of focusableElements) {
-                    target = document.querySelector(selector);
-                    if (target) {
-                        console.log('[\(jsReason)] Found target with selector: ' + selector);
-                        break;
-                    }
-                }
-
-                if (target) {
-                    console.log('[\(jsReason)] Attempting focus/click on: ' + target.tagName + (target.id ? '#' + target.id : ''));
-                    if (typeof target.focus === 'function') { target.focus({ preventScroll: false }); } 
-                    
-                    setTimeout(function() {
-                        console.log('[\(jsReason)] After attempts. Active element: ' + (document.activeElement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : 'null') + '. Document has focus: ' + document.hasFocus());
-                    }, 100);
-                } else {
-                    console.log('[\(jsReason)] No suitable target found. Focusing body as fallback.');
-                    if (document.body && typeof document.body.focus === 'function') { document.body.focus(); }
-                }
+                for (let selector of focusableElements) { target = document.querySelector(selector); if (target) { console.log('[\(jsReason)] Found target with selector: ' + selector); break; } }
+                if (target) { console.log('[\(jsReason)] Attempting focus/click on: ' + target.tagName + (target.id ? '#' + target.id : '')); if (typeof target.focus === 'function') { target.focus({ preventScroll: false }); } setTimeout(function() { console.log('[\(jsReason)] After attempts. Active element: ' + (document.activeElement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : 'null') + '. Document has focus: ' + document.hasFocus()); }, 100);
+                } else { console.log('[\(jsReason)] No suitable target found. Focusing body as fallback.'); if (document.body && typeof document.body.focus === 'function') { document.body.focus(); } }
             })();
         """
         webViewToFocus.evaluateJavaScript(javascript) { result, error in
@@ -291,16 +304,14 @@ class ViewController: NSViewController,
             else { NSLog("VC: \(jsReason) JS exec for \(webViewName) initiated. Result: \(String(describing: result))") }
         }
     }
-    
+
     // MARK: - Actions & Web Control
     @objc func togglePage() {
         NSLog("VC: Toggling page.")
         webView1.isHidden.toggle()
         webView2.isHidden.toggle()
-
         let currentActiveWebView = activeWebView
-        view.addSubview(currentActiveWebView)
-
+        view.addSubview(currentActiveWebView) // Ensure the active one is on top if overlapping views (though they fill bounds)
         applyZoom(to: activeWebView, scale: currentZoom(for: activeWebView))
         NSLog("VC: Calling attemptWebViewFocus after page toggle.")
         attemptWebViewFocus()
@@ -327,13 +338,8 @@ class ViewController: NSViewController,
 
     private func setZoom(_ scale: CGFloat, for wv: WKWebView) {
         let targetScaleKey: String
-        if wv == webView1 {
-            webView1ZoomScale = scale
-            targetScaleKey = "webView1ZoomScale_MultiAssistant_v1"
-        } else {
-            webView2ZoomScale = scale
-            targetScaleKey = "webView2ZoomScale_MultiAssistant_v1"
-        }
+        if wv == webView1 { webView1ZoomScale = scale; targetScaleKey = "webView1ZoomScale_MultiAssistant_v1" }
+        else { webView2ZoomScale = scale; targetScaleKey = "webView2ZoomScale_MultiAssistant_v1" }
         UserDefaults.standard.set(Float(scale), forKey: targetScaleKey)
         applyZoom(to: wv, scale: scale)
         NSLog("VC: Zoom set to \(scale) for \(wv == webView1 ? "WebView1" : "WebView2")")
@@ -351,13 +357,10 @@ class ViewController: NSViewController,
         let webViewName = wv == webView1 ? "WebView1" : "WebView2"
         NSLog("VC: WebView \(webViewName) didFinish navigation. URL: \(wv.url?.absoluteString ?? "N/A").")
         applyZoom(to: wv, scale: currentZoom(for: wv))
-
         if view.window?.isKeyWindow == true || webViewsReloadingAfterTermination.contains(wv) {
             NSLog("VC: WebView \(webViewName) finished, attempting focus (window is key or was reloading).")
             attemptWebViewFocus()
-        } else {
-            NSLog("VC: WebView \(webViewName) finished, but window not key and not specifically reloading. Focus not attempted automatically.")
-        }
+        } else { NSLog("VC: WebView \(webViewName) finished, but window not key and not specifically reloading. Focus not attempted automatically.") }
         webViewsReloadingAfterTermination.remove(wv)
     }
 
@@ -367,7 +370,7 @@ class ViewController: NSViewController,
         webViewsReloadingAfterTermination.insert(wv)
         wv.reload()
     }
-    
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let webViewName = (webView == webView1) ? "Page 1" : "Page 2"
         NSLog("VC: \(webViewName) failed provisional navigation: \(error.localizedDescription)")
@@ -385,341 +388,190 @@ class ViewController: NSViewController,
             NSLog("VC: OpenSettings - No window. Attempting to show via AppDelegate.")
             (NSApp.delegate as? AppDelegate)?.showWindowAction()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if self.view.window != nil {
-                    self.presentSettingsAlert()
-                } else {
-                    NSLog("VC: OpenSettings - Window still not available after delay and AppDelegate action.")
-                }
+                if self.view.window != nil { self.presentSettingsAlert() }
+                else { NSLog("VC: OpenSettings - Window still not available after delay and AppDelegate action.") }
             }
             return
         }
-
         if !window.isVisible || !window.isKeyWindow {
             NSLog("VC: OpenSettings - Window not visible/key. Activating and making key.")
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.presentSettingsAlert()
-            }
-        } else {
-            presentSettingsAlert()
-        }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.presentSettingsAlert() }
+        } else { presentSettingsAlert() }
     }
-    
+
     private func createSeparatorBox() -> NSBox {
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        return separator
+        let separator = NSBox(); separator.boxType = .separator; separator.translatesAutoresizingMaskIntoConstraints = false; return separator
     }
 
     private func createSectionHeader(title: String) -> NSTextField {
-        let label = NSTextField(labelWithString: title)
-        label.font = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize + 1)
-        label.isEditable = false
-        label.isSelectable = false
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
+        let label = NSTextField(labelWithString: title); label.font = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize + 1); label.isEditable = false; label.isSelectable = false; label.translatesAutoresizingMaskIntoConstraints = false; return label
     }
-    
+
     private func presentSettingsAlert() {
         guard let window = self.view.window, window.isVisible, window.isKeyWindow else {
             NSLog("VC: PresentSettingsAlert - Window conditions not met (not visible or not key). Retrying if not key.")
-            if let w = self.view.window, !w.isKeyWindow {
-                w.makeKeyAndOrderFront(nil)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.presentSettingsAlert() }
-            }
+            if let w = self.view.window, !w.isKeyWindow { w.makeKeyAndOrderFront(nil); DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.presentSettingsAlert() } }
             return
         }
         NSLog("VC: PresentSettingsAlert - Preparing settings UI.")
+        let alert = NSAlert(); alert.messageText = "MultiAssistant Settings"; alert.informativeText = "Customize URLs, window behavior, global shortcuts, and appearance."; alert.addButton(withTitle: "Save Changes"); alert.addButton(withTitle: "Cancel")
+        let desiredAccessoryViewWidth: CGFloat = 720; let labelColumnWidth: CGFloat = 160; let hStackSpacing: CGFloat = 12; let vStackRowSpacing: CGFloat = 16; let sectionHeaderSpacing: CGFloat = 8; let sectionBottomSpacing: CGFloat = 24; let outerPadding: CGFloat = 25
 
-        let alert = NSAlert()
-        alert.messageText = "MultiAssistant Settings"
-        alert.informativeText = "Customize URLs, window behavior, and global shortcuts."
-        alert.addButton(withTitle: "Save Changes")
-        alert.addButton(withTitle: "Cancel")
-
-        let desiredAccessoryViewWidth: CGFloat = 720
-                                        
-        let labelColumnWidth: CGFloat = 140
-        
-        let hStackSpacing: CGFloat = 12
-        let vStackRowSpacing: CGFloat = 16
-        let sectionHeaderSpacing: CGFloat = 8
-        let sectionBottomSpacing: CGFloat = 24
-        let outerPadding: CGFloat = 25
-
-        func createSettingRow(labelString: String, control: NSView) -> NSStackView {
-            let label = NSTextField(labelWithString: labelString)
-            label.alignment = .right
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.widthAnchor.constraint(equalToConstant: labelColumnWidth).isActive = true
-            
-            control.translatesAutoresizingMaskIntoConstraints = false
-            control.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-            let hStack = NSStackView(views: [label, control])
-            hStack.orientation = .horizontal
-            hStack.spacing = hStackSpacing
-            hStack.alignment = .firstBaseline
-            hStack.distribution = .fill
-            
-            if let textField = control as? NSTextField {
-                 textField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
-            }
-            
+        func createSettingRow(labelString: String, control: NSView, alignment: NSLayoutConstraint.Attribute = .firstBaseline) -> NSStackView {
+            let label = NSTextField(labelWithString: labelString); label.alignment = .right; label.translatesAutoresizingMaskIntoConstraints = false; label.widthAnchor.constraint(equalToConstant: labelColumnWidth).isActive = true
+            control.translatesAutoresizingMaskIntoConstraints = false; control.setContentHuggingPriority(.defaultLow, for: .horizontal); control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let hStack = NSStackView(views: [label, control]); hStack.orientation = .horizontal; hStack.spacing = hStackSpacing; hStack.alignment = alignment
+            if let textField = control as? NSTextField { textField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true }
+            if let segmentedControl = control as? NSSegmentedControl { segmentedControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true} // ADDED: Ensure segmented control has enough width
             return hStack
         }
-        
-        let urlSectionHeader = createSectionHeader(title: "Web Page URLs")
-        let url1TextField = NSTextField(string: urlString1 ?? defaultUrlString1)
-        url1TextField.placeholderString = "e.g., https://chat.openai.com"
-        let url1Row = createSettingRow(labelString: "Page 1 URL:", control: url1TextField)
 
-        let url2TextField = NSTextField(string: urlString2 ?? defaultUrlString2)
-        url2TextField.placeholderString = "e.g., https://gemini.google.com"
-        let url2Row = createSettingRow(labelString: "Page 2 URL:", control: url2TextField)
+        let urlSectionHeader = createSectionHeader(title: "Web Page URLs")
+        let url1TextField = NSTextField(string: urlString1 ?? defaultUrlString1); url1TextField.placeholderString = "e.g., https://chat.openai.com"; let url1Row = createSettingRow(labelString: "Page 1 URL:", control: url1TextField)
+        let url2TextField = NSTextField(string: urlString2 ?? defaultUrlString2); url2TextField.placeholderString = "e.g., https://gemini.google.com"; let url2Row = createSettingRow(labelString: "Page 2 URL:", control: url2TextField)
 
         let behaviorSectionHeader = createSectionHeader(title: "Window Behavior")
-        let autohideCheckbox = NSButton(checkboxWithTitle: "Auto-hide window when application is inactive", target: nil, action: nil)
-        autohideCheckbox.state = UserDefaults.standard.bool(forKey: AppDelegate.autohideWindowKey) ? .on : .off
-        autohideCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        
-        let autohideIndentView = NSView()
-        autohideIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true
-        let autohideControlRow = NSStackView(views: [autohideIndentView, autohideCheckbox])
-        autohideControlRow.orientation = .horizontal
-        autohideControlRow.spacing = 0
-        autohideControlRow.alignment = .firstBaseline
+        let autohideCheckbox = NSButton(checkboxWithTitle: "Auto-hide window when application is inactive", target: nil, action: nil); autohideCheckbox.state = UserDefaults.standard.bool(forKey: AppDelegate.autohideWindowKey) ? .on : .off; autohideCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        let autohideIndentView = NSView(); autohideIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let autohideControlRow = NSStackView(views: [autohideIndentView, autohideCheckbox]); autohideControlRow.orientation = .horizontal; autohideControlRow.spacing = 0; autohideControlRow.alignment = .firstBaseline
+
+        // ADDED: Desktop Assignment Setting UI
+        let desktopAssignmentControl = NSSegmentedControl(labels: ["All Desktops", "This Desktop", "Standard"], trackingMode: .selectOne, target: nil, action: nil)
+        desktopAssignmentControl.segmentStyle = .texturedRounded
+        if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue {
+            desktopAssignmentControl.selectedSegment = 0
+        } else if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.moveToActiveSpace.rawValue {
+            desktopAssignmentControl.selectedSegment = 1
+        } else { // Standard (empty or managed)
+            desktopAssignmentControl.selectedSegment = 2
+        }
+        let desktopAssignmentRow = createSettingRow(labelString: "Assign Window To:", control: desktopAssignmentControl, alignment: .centerY)
+
+
+        let appearanceSectionHeader = createSectionHeader(title: "Window Appearance")
+        let windowAlphaSlider = NSSlider(value: Double(currentWindowAlpha), minValue: 0.1, maxValue: 1.0, target: nil, action: nil); windowAlphaSlider.allowsTickMarkValuesOnly = false; windowAlphaSlider.numberOfTickMarks = 10; windowAlphaSlider.translatesAutoresizingMaskIntoConstraints = false
+        let currentWindowAlphaDisplayLabel = NSTextField(labelWithString: String(format: "Overall Opacity: %.0f%%", currentWindowAlpha * 100)); currentWindowAlphaDisplayLabel.isEditable = false; currentWindowAlphaDisplayLabel.isSelectable = false; currentWindowAlphaDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; currentWindowAlphaDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        let windowAlphaSliderAndDisplay = NSStackView(views: [windowAlphaSlider, currentWindowAlphaDisplayLabel]); windowAlphaSliderAndDisplay.orientation = .horizontal; windowAlphaSliderAndDisplay.spacing = hStackSpacing; windowAlphaSliderAndDisplay.alignment = .centerY
+        let windowAlphaRow = createSettingRow(labelString: "Window Transparency:", control: windowAlphaSliderAndDisplay, alignment: .centerY)
+
+        let webViewAlphaSlider = NSSlider(value: Double(currentWebViewAlpha), minValue: 0.1, maxValue: 1.0, target: nil, action: nil); webViewAlphaSlider.allowsTickMarkValuesOnly = false; webViewAlphaSlider.numberOfTickMarks = 10; webViewAlphaSlider.translatesAutoresizingMaskIntoConstraints = false
+        let currentWebViewAlphaDisplayLabel = NSTextField(labelWithString: String(format: "Content Opacity: %.0f%%", currentWebViewAlpha * 100)); currentWebViewAlphaDisplayLabel.isEditable = false; currentWebViewAlphaDisplayLabel.isSelectable = false; currentWebViewAlphaDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; currentWebViewAlphaDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        let webViewAlphaSliderAndDisplay = NSStackView(views: [webViewAlphaSlider, currentWebViewAlphaDisplayLabel]); webViewAlphaSliderAndDisplay.orientation = .horizontal; webViewAlphaSliderAndDisplay.spacing = hStackSpacing; webViewAlphaSliderAndDisplay.alignment = .centerY
+        let webViewAlphaRow = createSettingRow(labelString: "Web Page Opacity:", control: webViewAlphaSliderAndDisplay, alignment: .centerY)
+
 
         let globalShortcutSectionHeader = createSectionHeader(title: "Global Toggle Shortcut (Show/Hide Window)")
-        
-        let currentShortcutDisplayLabel = NSTextField(labelWithString: "Current: \( (NSApp.delegate as? AppDelegate)?.formattedShortcutString() ?? "Not Set" )")
-        currentShortcutDisplayLabel.isEditable = false
-        currentShortcutDisplayLabel.isSelectable = false
-        let currentShortcutIndentView = NSView()
-        currentShortcutIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true
-        let currentShortcutRow = NSStackView(views: [currentShortcutIndentView, currentShortcutDisplayLabel])
-        currentShortcutRow.orientation = .horizontal
-        currentShortcutRow.alignment = .firstBaseline
+        let currentShortcutDisplayLabel = NSTextField(labelWithString: "Current: \( (NSApp.delegate as? AppDelegate)?.formattedShortcutString() ?? "Not Set" )"); currentShortcutDisplayLabel.isEditable = false; currentShortcutDisplayLabel.isSelectable = false
+        let currentShortcutIndentView = NSView(); currentShortcutIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let currentShortcutRow = NSStackView(views: [currentShortcutIndentView, currentShortcutDisplayLabel]); currentShortcutRow.orientation = .horizontal; currentShortcutRow.alignment = .firstBaseline
+        let keyTextField = NSTextField(string: (NSApp.delegate as? AppDelegate)?.currentShortcutKeyCharacter ?? ""); keyTextField.placeholderString = "e.g., . or A"; keyTextField.widthAnchor.constraint(equalToConstant: 70).isActive = true; let keyRow = createSettingRow(labelString: "Key:", control: keyTextField)
+        let optionCheckbox = NSButton(checkboxWithTitle: "Option (⌥)", target: nil, action: nil); let commandCheckbox = NSButton(checkboxWithTitle: "Command (⌘)", target: nil, action: nil); let shiftCheckbox = NSButton(checkboxWithTitle: "Shift (⇧)", target: nil, action: nil); let controlCheckbox = NSButton(checkboxWithTitle: "Control (⌃)", target: nil, action: nil)
+        if let appDelegate = NSApp.delegate as? AppDelegate { optionCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.option) ? .on : .off; commandCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.command) ? .on : .off; shiftCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.shift) ? .on : .off; controlCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.control) ? .on : .off }
+        let modifiersCheckboxHStack = NSStackView(views: [optionCheckbox, commandCheckbox, shiftCheckbox, controlCheckbox]); modifiersCheckboxHStack.orientation = .horizontal; modifiersCheckboxHStack.spacing = hStackSpacing * 1.2; modifiersCheckboxHStack.alignment = .centerY; let modifiersRow = createSettingRow(labelString: "Modifiers:", control: modifiersCheckboxHStack, alignment: .centerY)
 
-        let keyTextField = NSTextField(string: (NSApp.delegate as? AppDelegate)?.currentShortcutKeyCharacter ?? "")
-        keyTextField.placeholderString = "e.g., . or A"
-        keyTextField.widthAnchor.constraint(equalToConstant: 70).isActive = true
-        let keyRow = createSettingRow(labelString: "Key:", control: keyTextField)
-
-        let optionCheckbox = NSButton(checkboxWithTitle: "Option (⌥)", target: nil, action: nil)
-        let commandCheckbox = NSButton(checkboxWithTitle: "Command (⌘)", target: nil, action: nil)
-        let shiftCheckbox = NSButton(checkboxWithTitle: "Shift (⇧)", target: nil, action: nil)
-        let controlCheckbox = NSButton(checkboxWithTitle: "Control (⌃)", target: nil, action: nil)
-        
-        if let appDelegate = NSApp.delegate as? AppDelegate {
-            optionCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.option) ? .on : .off
-            commandCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.command) ? .on : .off
-            shiftCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.shift) ? .on : .off
-            controlCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.control) ? .on : .off
-        }
-        
-        let modifiersCheckboxHStack = NSStackView(views: [optionCheckbox, commandCheckbox, shiftCheckbox, controlCheckbox])
-        modifiersCheckboxHStack.orientation = .horizontal
-        modifiersCheckboxHStack.spacing = hStackSpacing * 1.2
-        modifiersCheckboxHStack.alignment = .centerY
-        modifiersCheckboxHStack.distribution = .fillProportionally
-        let modifiersRow = createSettingRow(labelString: "Modifiers:", control: modifiersCheckboxHStack)
-        
         let otherShortcutsSectionHeader = createSectionHeader(title: "In-App Shortcuts")
-        let shortcutTogglePageLabel = NSTextField(labelWithString: "Toggle Page 1/2:  Command (⌘) + 1")
-        shortcutTogglePageLabel.isEditable = false
-        shortcutTogglePageLabel.isSelectable = false
-        let togglePageIndentView = NSView()
-        togglePageIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true
-        let togglePageRow = NSStackView(views: [togglePageIndentView, shortcutTogglePageLabel])
-        togglePageRow.orientation = .horizontal
-        togglePageRow.alignment = .firstBaseline
+        let shortcutTogglePageLabel = NSTextField(labelWithString: "Toggle Page 1/2:  Command (⌘) + 1"); shortcutTogglePageLabel.isEditable = false; shortcutTogglePageLabel.isSelectable = false
+        let togglePageIndentView = NSView(); togglePageIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let togglePageRow = NSStackView(views: [togglePageIndentView, shortcutTogglePageLabel]); togglePageRow.orientation = .horizontal; togglePageRow.alignment = .firstBaseline
 
-        let mainVerticalStackView = NSStackView()
-        mainVerticalStackView.orientation = .vertical
-        mainVerticalStackView.spacing = vStackRowSpacing
-        mainVerticalStackView.alignment = .leading
-        mainVerticalStackView.edgeInsets = NSEdgeInsets(top: outerPadding, left: outerPadding, bottom: outerPadding, right: outerPadding)
-        
-        mainVerticalStackView.addArrangedSubview(urlSectionHeader)
-        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: urlSectionHeader)
-        mainVerticalStackView.addArrangedSubview(url1Row)
-        mainVerticalStackView.addArrangedSubview(url2Row)
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: url2Row)
-
-        mainVerticalStackView.addArrangedSubview(createSeparatorBox())
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-
-        mainVerticalStackView.addArrangedSubview(behaviorSectionHeader)
-        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: behaviorSectionHeader)
+        let mainVerticalStackView = NSStackView(); mainVerticalStackView.orientation = .vertical; mainVerticalStackView.spacing = vStackRowSpacing; mainVerticalStackView.alignment = .leading; mainVerticalStackView.edgeInsets = NSEdgeInsets(top: outerPadding, left: outerPadding, bottom: outerPadding, right: outerPadding)
+        mainVerticalStackView.addArrangedSubview(urlSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: urlSectionHeader); mainVerticalStackView.addArrangedSubview(url1Row); mainVerticalStackView.addArrangedSubview(url2Row); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: url2Row); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
+        mainVerticalStackView.addArrangedSubview(behaviorSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: behaviorSectionHeader)
         mainVerticalStackView.addArrangedSubview(autohideControlRow)
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: autohideControlRow)
+        mainVerticalStackView.addArrangedSubview(desktopAssignmentRow) // ADDED: Desktop assignment row
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: desktopAssignmentRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
 
-        mainVerticalStackView.addArrangedSubview(createSeparatorBox())
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-
-        mainVerticalStackView.addArrangedSubview(globalShortcutSectionHeader)
-        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: globalShortcutSectionHeader)
-        mainVerticalStackView.addArrangedSubview(currentShortcutRow)
-        mainVerticalStackView.addArrangedSubview(keyRow)
-        mainVerticalStackView.addArrangedSubview(modifiersRow)
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: modifiersRow)
-        
-        mainVerticalStackView.addArrangedSubview(createSeparatorBox())
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-
-        mainVerticalStackView.addArrangedSubview(otherShortcutsSectionHeader)
-        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: otherShortcutsSectionHeader)
-        mainVerticalStackView.addArrangedSubview(togglePageRow)
-
-        // --- MODIFICATION FOR SETTINGS PANEL SIZE ---
-        mainVerticalStackView.translatesAutoresizingMaskIntoConstraints = false
-        // Explicitly set frame width, layout, then set frame height based on fitting size
-        // This ensures the stack view has a defined width for its internal layout pass.
-        mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: 10) // Initial height is temporary
-        mainVerticalStackView.layoutSubtreeIfNeeded() // Calculate content height based on width
-        
-        let requiredHeight = mainVerticalStackView.fittingSize.height
-        mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: requiredHeight)
-        
+        mainVerticalStackView.addArrangedSubview(appearanceSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: appearanceSectionHeader); mainVerticalStackView.addArrangedSubview(windowAlphaRow); mainVerticalStackView.addArrangedSubview(webViewAlphaRow); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: webViewAlphaRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
+        mainVerticalStackView.addArrangedSubview(globalShortcutSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: globalShortcutSectionHeader); mainVerticalStackView.addArrangedSubview(currentShortcutRow); mainVerticalStackView.addArrangedSubview(keyRow); mainVerticalStackView.addArrangedSubview(modifiersRow); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: modifiersRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
+        mainVerticalStackView.addArrangedSubview(otherShortcutsSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: otherShortcutsSectionHeader); mainVerticalStackView.addArrangedSubview(togglePageRow)
+        mainVerticalStackView.translatesAutoresizingMaskIntoConstraints = false; mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: 10); mainVerticalStackView.layoutSubtreeIfNeeded()
+        let requiredHeight = mainVerticalStackView.fittingSize.height; mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: requiredHeight)
         alert.accessoryView = mainVerticalStackView
-        
-        // This width constraint on the accessoryView itself can be kept as a safeguard,
-        // or to satisfy the alert's own layout if it prefers constraints.
-        if let accessory = alert.accessoryView {
-             accessory.widthAnchor.constraint(equalToConstant: desiredAccessoryViewWidth).isActive = true
-             // Optionally, you could also constrain the height if `mainVerticalStackView.frame` wasn't set.
-             // accessory.heightAnchor.constraint(equalToConstant: requiredHeight).isActive = true
-        }
-        // --- END OF MODIFICATION ---
-        
+        if let accessory = alert.accessoryView { accessory.widthAnchor.constraint(equalToConstant: desiredAccessoryViewWidth).isActive = true }
         alert.window.layoutIfNeeded()
-        
+
         alert.beginSheetModal(for: window) { response in
-            self.handleSettingsAlertResponse(response,
-                                             alert: alert,
-                                             url1TF: url1TextField,
-                                             url2TF: url2TextField,
-                                             autohideCB: autohideCheckbox,
-                                             keyTF: keyTextField,
-                                             optionCB: optionCheckbox,
-                                             commandCB: commandCheckbox,
-                                             shiftCB: shiftCheckbox,
-                                             controlCB: controlCheckbox,
-                                             currentShortcutDisplayLabel: currentShortcutDisplayLabel
-                                            )
+            self.handleSettingsAlertResponse(response, alert: alert, url1TF: url1TextField, url2TF: url2TextField, autohideCB: autohideCheckbox,
+                                             desktopAssignmentControl: desktopAssignmentControl, // ADDED
+                                             windowAlphaSlider: windowAlphaSlider, windowAlphaDisplayLabel: currentWindowAlphaDisplayLabel,
+                                             webViewAlphaSlider: webViewAlphaSlider, webViewAlphaDisplayLabel: currentWebViewAlphaDisplayLabel,
+                                             keyTF: keyTextField, optionCB: optionCheckbox, commandCB: commandCheckbox, shiftCB: shiftCheckbox, controlCB: controlCheckbox, currentShortcutDisplayLabel: currentShortcutDisplayLabel)
         }
     }
-    
+
     private func handleSettingsAlertResponse(
-        _ response: NSApplication.ModalResponse,
-        alert: NSAlert,
-        url1TF: NSTextField, url2TF: NSTextField,
-        autohideCB: NSButton,
-        keyTF: NSTextField,
-        optionCB: NSButton, commandCB: NSButton, shiftCB: NSButton, controlCB: NSButton,
-        currentShortcutDisplayLabel: NSTextField
+        _ response: NSApplication.ModalResponse, alert: NSAlert,
+        url1TF: NSTextField, url2TF: NSTextField, autohideCB: NSButton,
+        desktopAssignmentControl: NSSegmentedControl, // ADDED
+        windowAlphaSlider: NSSlider, windowAlphaDisplayLabel: NSTextField,
+        webViewAlphaSlider: NSSlider, webViewAlphaDisplayLabel: NSTextField,
+        keyTF: NSTextField, optionCB: NSButton, commandCB: NSButton, shiftCB: NSButton, controlCB: NSButton, currentShortcutDisplayLabel: NSTextField
     ) {
         if response == .alertFirstButtonReturn {
             NSLog("VC: Settings Save button clicked.")
             self.saveSettings(urlString: url1TF.stringValue, forKey: "customURL1_MultiAssistant_v1", defaultURL: self.defaultUrlString1, webView: self.webView1) { self.urlString1 = $0 }
             self.saveSettings(urlString: url2TF.stringValue, forKey: "customURL2_MultiAssistant_v1", defaultURL: self.defaultUrlString2, webView: self.webView2) { self.urlString2 = $0 }
-            
-            let autohideEnabled = autohideCB.state == .on
-            UserDefaults.standard.set(autohideEnabled, forKey: AppDelegate.autohideWindowKey)
-            NSLog("VC: Settings - Autohide window set to: \(autohideEnabled)")
+            let autohideEnabled = autohideCB.state == .on; UserDefaults.standard.set(autohideEnabled, forKey: AppDelegate.autohideWindowKey); NSLog("VC: Settings - Autohide window set to: \(autohideEnabled)")
 
-            var newModifiers = NSEvent.ModifierFlags()
-            if optionCB.state == .on { newModifiers.insert(.option) }
-            if commandCB.state == .on { newModifiers.insert(.command) }
-            if shiftCB.state == .on { newModifiers.insert(.shift) }
-            if controlCB.state == .on { newModifiers.insert(.control) }
+            // ADDED: Handle Desktop Assignment
+            let selectedSegment = desktopAssignmentControl.selectedSegment
+            var newDesktopAssignmentRawValue: UInt
+            var assignmentDescription: String
+            switch selectedSegment {
+            case 0: // All Desktops
+                newDesktopAssignmentRawValue = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
+                assignmentDescription = "All Desktops"
+            case 1: // This Desktop
+                newDesktopAssignmentRawValue = NSWindow.CollectionBehavior.moveToActiveSpace.rawValue
+                assignmentDescription = "This Desktop Only"
+            default: // Standard (case 2 or any other)
+                newDesktopAssignmentRawValue = NSWindow.CollectionBehavior().rawValue // Empty set, effectively default/managed
+                assignmentDescription = "Standard Behavior"
+            }
+            currentDesktopAssignmentRawValue = newDesktopAssignmentRawValue
+            UserDefaults.standard.set(Int(newDesktopAssignmentRawValue), forKey: ViewController.windowDesktopAssignmentKey)
+            view.window?.collectionBehavior = NSWindow.CollectionBehavior(rawValue: newDesktopAssignmentRawValue)
+            NSLog("VC: Settings - Window desktop assignment set to: \(assignmentDescription) (RawValue: \(newDesktopAssignmentRawValue))")
 
-            let rawKeyString = keyTF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            var finalKeyCode: UInt16 = UInt16.max
-            var finalKeyCharacter: String = ""
 
+            let newWindowAlphaValue = clamp(CGFloat(windowAlphaSlider.doubleValue), min: 0.1, max: 1.0)
+            currentWindowAlpha = newWindowAlphaValue
+            UserDefaults.standard.set(newWindowAlphaValue, forKey: ViewController.windowAlphaKey)
+            view.window?.alphaValue = newWindowAlphaValue
+            windowAlphaDisplayLabel.stringValue = String(format: "Overall Opacity: %.0f%%", newWindowAlphaValue * 100)
+            NSLog("VC: Settings - Window alpha set to: \(newWindowAlphaValue)")
+
+            let newWebViewAlphaValue = clamp(CGFloat(webViewAlphaSlider.doubleValue), min: 0.1, max: 1.0)
+            currentWebViewAlpha = newWebViewAlphaValue
+            UserDefaults.standard.set(newWebViewAlphaValue, forKey: ViewController.webViewAlphaKey)
+            [webView1, webView2].forEach { $0?.alphaValue = newWebViewAlphaValue }
+            webViewAlphaDisplayLabel.stringValue = String(format: "Content Opacity: %.0f%%", newWebViewAlphaValue * 100)
+            NSLog("VC: Settings - Web View alpha set to: \(newWebViewAlphaValue)")
+
+
+            var newModifiers = NSEvent.ModifierFlags(); if optionCB.state == .on { newModifiers.insert(.option) }; if commandCB.state == .on { newModifiers.insert(.command) }; if shiftCB.state == .on { newModifiers.insert(.shift) }; if controlCB.state == .on { newModifiers.insert(.control) }
+            let rawKeyString = keyTF.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); var finalKeyCode: UInt16 = UInt16.max; var finalKeyCharacter: String = ""
             if !rawKeyString.isEmpty {
                 finalKeyCharacter = String(rawKeyString.prefix(1)).uppercased()
-                
                 switch finalKeyCharacter {
-                    case "1": finalKeyCode = UInt16(kVK_ANSI_1); case "2": finalKeyCode = UInt16(kVK_ANSI_2)
-                    case "3": finalKeyCode = UInt16(kVK_ANSI_3); case "4": finalKeyCode = UInt16(kVK_ANSI_4)
-                    case "5": finalKeyCode = UInt16(kVK_ANSI_5); case "6": finalKeyCode = UInt16(kVK_ANSI_6)
-                    case "7": finalKeyCode = UInt16(kVK_ANSI_7); case "8": finalKeyCode = UInt16(kVK_ANSI_8)
-                    case "9": finalKeyCode = UInt16(kVK_ANSI_9); case "0": finalKeyCode = UInt16(kVK_ANSI_0)
-                    case "Q": finalKeyCode = UInt16(kVK_ANSI_Q); case "W": finalKeyCode = UInt16(kVK_ANSI_W)
-                    case "E": finalKeyCode = UInt16(kVK_ANSI_E); case "R": finalKeyCode = UInt16(kVK_ANSI_R)
-                    case "T": finalKeyCode = UInt16(kVK_ANSI_T); case "Y": finalKeyCode = UInt16(kVK_ANSI_Y)
-                    case "U": finalKeyCode = UInt16(kVK_ANSI_U); case "I": finalKeyCode = UInt16(kVK_ANSI_I)
-                    case "O": finalKeyCode = UInt16(kVK_ANSI_O); case "P": finalKeyCode = UInt16(kVK_ANSI_P)
-                    case "A": finalKeyCode = UInt16(kVK_ANSI_A); case "S": finalKeyCode = UInt16(kVK_ANSI_S)
-                    case "D": finalKeyCode = UInt16(kVK_ANSI_D); case "F": finalKeyCode = UInt16(kVK_ANSI_F)
-                    case "G": finalKeyCode = UInt16(kVK_ANSI_G); case "H": finalKeyCode = UInt16(kVK_ANSI_H)
-                    case "J": finalKeyCode = UInt16(kVK_ANSI_J); case "K": finalKeyCode = UInt16(kVK_ANSI_K)
-                    case "L": finalKeyCode = UInt16(kVK_ANSI_L)
-                    case "Z": finalKeyCode = UInt16(kVK_ANSI_Z); case "X": finalKeyCode = UInt16(kVK_ANSI_X)
-                    case "C": finalKeyCode = UInt16(kVK_ANSI_C); case "V": finalKeyCode = UInt16(kVK_ANSI_V)
-                    case "B": finalKeyCode = UInt16(kVK_ANSI_B); case "N": finalKeyCode = UInt16(kVK_ANSI_N)
-                    case "M": finalKeyCode = UInt16(kVK_ANSI_M)
-                    case ".": finalKeyCode = UInt16(kVK_ANSI_Period); case ",": finalKeyCode = UInt16(kVK_ANSI_Comma)
-                    case ";": finalKeyCode = UInt16(kVK_ANSI_Semicolon); case "'": finalKeyCode = UInt16(kVK_ANSI_Quote)
-                    case "/": finalKeyCode = UInt16(kVK_ANSI_Slash); case "\\": finalKeyCode = UInt16(kVK_ANSI_Backslash)
-                    case "`": finalKeyCode = UInt16(kVK_ANSI_Grave); case "-": finalKeyCode = UInt16(kVK_ANSI_Minus)
-                    case "=": finalKeyCode = UInt16(kVK_ANSI_Equal); case "[": finalKeyCode = UInt16(kVK_ANSI_LeftBracket)
-                    case "]": finalKeyCode = UInt16(kVK_ANSI_RightBracket)
-                    case "F1": finalKeyCode = UInt16(kVK_F1); case "F2": finalKeyCode = UInt16(kVK_F2)
-                    default:
-                        NSLog("VC: Warning - Key character '\(finalKeyCharacter)' not in simple map. Shortcut will be disabled if mapping fails.")
-                        finalKeyCode = UInt16.max
-                        finalKeyCharacter = ""
-                        newModifiers = []
+                    case "1": finalKeyCode = UInt16(kVK_ANSI_1); case "2": finalKeyCode = UInt16(kVK_ANSI_2); case "3": finalKeyCode = UInt16(kVK_ANSI_3); case "4": finalKeyCode = UInt16(kVK_ANSI_4); case "5": finalKeyCode = UInt16(kVK_ANSI_5); case "6": finalKeyCode = UInt16(kVK_ANSI_6); case "7": finalKeyCode = UInt16(kVK_ANSI_7); case "8": finalKeyCode = UInt16(kVK_ANSI_8); case "9": finalKeyCode = UInt16(kVK_ANSI_9); case "0": finalKeyCode = UInt16(kVK_ANSI_0)
+                    case "Q": finalKeyCode = UInt16(kVK_ANSI_Q); case "W": finalKeyCode = UInt16(kVK_ANSI_W); case "E": finalKeyCode = UInt16(kVK_ANSI_E); case "R": finalKeyCode = UInt16(kVK_ANSI_R); case "T": finalKeyCode = UInt16(kVK_ANSI_T); case "Y": finalKeyCode = UInt16(kVK_ANSI_Y); case "U": finalKeyCode = UInt16(kVK_ANSI_U); case "I": finalKeyCode = UInt16(kVK_ANSI_I); case "O": finalKeyCode = UInt16(kVK_ANSI_O); case "P": finalKeyCode = UInt16(kVK_ANSI_P)
+                    case "A": finalKeyCode = UInt16(kVK_ANSI_A); case "S": finalKeyCode = UInt16(kVK_ANSI_S); case "D": finalKeyCode = UInt16(kVK_ANSI_D); case "F": finalKeyCode = UInt16(kVK_ANSI_F); case "G": finalKeyCode = UInt16(kVK_ANSI_G); case "H": finalKeyCode = UInt16(kVK_ANSI_H); case "J": finalKeyCode = UInt16(kVK_ANSI_J); case "K": finalKeyCode = UInt16(kVK_ANSI_K); case "L": finalKeyCode = UInt16(kVK_ANSI_L)
+                    case "Z": finalKeyCode = UInt16(kVK_ANSI_Z); case "X": finalKeyCode = UInt16(kVK_ANSI_X); case "C": finalKeyCode = UInt16(kVK_ANSI_C); case "V": finalKeyCode = UInt16(kVK_ANSI_V); case "B": finalKeyCode = UInt16(kVK_ANSI_B); case "N": finalKeyCode = UInt16(kVK_ANSI_N); case "M": finalKeyCode = UInt16(kVK_ANSI_M)
+                    case ".": finalKeyCode = UInt16(kVK_ANSI_Period); case ",": finalKeyCode = UInt16(kVK_ANSI_Comma); case ";": finalKeyCode = UInt16(kVK_ANSI_Semicolon); case "'": finalKeyCode = UInt16(kVK_ANSI_Quote); case "/": finalKeyCode = UInt16(kVK_ANSI_Slash); case "\\": finalKeyCode = UInt16(kVK_ANSI_Backslash)
+                    case "`": finalKeyCode = UInt16(kVK_ANSI_Grave); case "-": finalKeyCode = UInt16(kVK_ANSI_Minus); case "=": finalKeyCode = UInt16(kVK_ANSI_Equal); case "[": finalKeyCode = UInt16(kVK_ANSI_LeftBracket); case "]": finalKeyCode = UInt16(kVK_ANSI_RightBracket)
+                    default: NSLog("VC: Warning - Key character '\(finalKeyCharacter)' not in simple map."); if newModifiers.isEmpty { finalKeyCode = UInt16.max; finalKeyCharacter = "" } else { finalKeyCode = UInt16.max; finalKeyCharacter = ""; NSLog("VC: Unknown key character '\(finalKeyCharacter)' with modifiers. Clearing key.") }
                 }
-            } else {
-                finalKeyCode = UInt16.max
-                finalKeyCharacter = ""
-                newModifiers = []
-            }
-            
-            let defaults = UserDefaults.standard
-            defaults.set(NSNumber(value: finalKeyCode), forKey: AppDelegate.shortcutKeyCodeKey)
-            defaults.set(newModifiers.rawValue, forKey: AppDelegate.shortcutModifierFlagsKey)
-            defaults.set(finalKeyCharacter, forKey: AppDelegate.shortcutKeyCharacterKey)
-            NSLog("VC: Saved shortcut - KeyCode: \(finalKeyCode), Modifiers: \(newModifiers.rawValue), Char: '\(finalKeyCharacter)'")
-
-            if let appDelegate = NSApp.delegate as? AppDelegate {
-                appDelegate.currentShortcutKeyCode = finalKeyCode
-                appDelegate.currentShortcutModifierFlags = newModifiers
-                appDelegate.currentShortcutKeyCharacter = finalKeyCharacter
-            }
-            
+            } else { finalKeyCode = UInt16.max; finalKeyCharacter = ""; newModifiers = [] }
+            let defaults = UserDefaults.standard; defaults.set(NSNumber(value: finalKeyCode), forKey: AppDelegate.shortcutKeyCodeKey); defaults.set(newModifiers.rawValue, forKey: AppDelegate.shortcutModifierFlagsKey); defaults.set(finalKeyCharacter, forKey: AppDelegate.shortcutKeyCharacterKey); NSLog("VC: Saved shortcut - KeyCode: \(finalKeyCode), Modifiers: \(newModifiers.rawValue), Char: '\(finalKeyCharacter)'")
+            if let appDelegate = NSApp.delegate as? AppDelegate { appDelegate.currentShortcutKeyCode = finalKeyCode; appDelegate.currentShortcutModifierFlags = newModifiers; appDelegate.currentShortcutKeyCharacter = finalKeyCharacter; currentShortcutDisplayLabel.stringValue = "Current: \(appDelegate.formattedShortcutString())" }
             NotificationCenter.default.post(name: .shortcutSettingsChanged, object: nil)
-
-        } else {
-            NSLog("VC: Settings Cancel button clicked or sheet dismissed.")
-        }
+        } else { NSLog("VC: Settings Cancel button clicked or sheet dismissed.") }
     }
 
     private func saveSettings(urlString: String, forKey key: String, defaultURL: String, webView: WKWebView, assignToInstanceVar: @escaping (String) -> Void) {
         let trimmedUrl = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedUrl.isEmpty {
-            UserDefaults.standard.set(defaultURL, forKey: key)
-            assignToInstanceVar(defaultURL)
-            if let url = URL(string: defaultURL) { webView.load(URLRequest(url: url)) }
-             NSLog("VC: Settings - \(key) reset to default: \(defaultURL)")
-        } else if let url = URL(string: trimmedUrl), (url.scheme == "http" || url.scheme == "https") {
-            UserDefaults.standard.set(trimmedUrl, forKey: key)
-            assignToInstanceVar(trimmedUrl)
-            if webView.url?.absoluteString != trimmedUrl {
-                webView.load(URLRequest(url: url))
-            }
-             NSLog("VC: Settings - \(key) updated to: \(trimmedUrl)")
-        } else {
-            NSLog("VC: Settings - Invalid URL for \(key): '\(trimmedUrl)'. Not saved. Previous URL remains.")
-        }
+        if trimmedUrl.isEmpty { UserDefaults.standard.set(defaultURL, forKey: key); assignToInstanceVar(defaultURL); if let url = URL(string: defaultURL) { webView.load(URLRequest(url: url)) }; NSLog("VC: Settings - \(key) reset to default: \(defaultURL)")
+        } else if let url = URL(string: trimmedUrl), (url.scheme == "http" || url.scheme == "https") { UserDefaults.standard.set(trimmedUrl, forKey: key); assignToInstanceVar(trimmedUrl); if webView.url?.absoluteString != trimmedUrl { webView.load(URLRequest(url: url)) }; NSLog("VC: Settings - \(key) updated to: \(trimmedUrl)")
+        } else { NSLog("VC: Settings - Invalid URL for \(key): '\(trimmedUrl)'. Not saved. Previous URL remains.") }
     }
 }
-
