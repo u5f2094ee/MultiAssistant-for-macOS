@@ -1,7 +1,7 @@
 ## 2025.06.04 Version 1.2
 1. Implement a blur and transparency effect with configurable options. 
 2. Add “Assign to Desktops” in settings.
-3. Add “Turn on the global bold text style” in settings.
+3. Add “Toggle the global bold text style” in settings.
 
 
 
