@@ -63,18 +63,6 @@
     - Scroll down to the "Security" section.
     - You should see a message about "MultiAssistant" being blocked. Click **“Open Anyway”**.
 
-
----
-
-## Settings
-
-Open Settings via ⌘ + , or select **Settings...** from the menu bar icon. Customize:
-
-- **Page URLs**: Edit the URLs for ChatGPT and Gemini.
-- **Auto-hide Behavior**: Toggle whether the window hides on loss of focus.
-- **Global Shortcut**: Choose modifiers and key for show/hide.
-- **View Controls**: Review in-app shortcuts for page switching, zoom, and refresh.
-
 ---
 
 ## Acknowledgements
