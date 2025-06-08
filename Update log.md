@@ -1,3 +1,9 @@
+## 2025.06.08 Version 1.3
+1. Implement configurable tone (Warm/Cold) options.
+2. Add support for downloading attachments.
+
+
+
 ## 2025.06.04 Version 1.2
 1. Implement a blur and transparency effect with configurable options. 
 2. Add “Assign to Desktops” in settings.
