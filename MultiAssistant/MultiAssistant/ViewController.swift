@@ -23,6 +23,7 @@ class ViewController: NSViewController,
     private var webView2: WKWebView!
     private var visualEffectView: NSVisualEffectView!
     private var temperatureOverlayView: ClickThroughNSView!
+    private var brightnessOverlayView: ClickThroughNSView! // New view for brightness
 
     // Configuration constants
     private let defaultUrlString1 = "https://chat.openai.com/"
@@ -39,6 +40,7 @@ class ViewController: NSViewController,
     static let windowDesktopAssignmentKey = "windowDesktopAssignmentKey_v2"
     static let globalBoldFontKey = "globalBoldFontEnabledKey_MultiAssistant_v1"
     static let webpageTemperatureKey = "webpageTemperatureKey_v1"
+    static let webpageBrightnessKey = "webpageBrightnessKey_v1" // New key for brightness
 
     // Runtime state
     private var webView1ZoomScale: CGFloat = 1.0
@@ -50,6 +52,7 @@ class ViewController: NSViewController,
     private var currentDesktopAssignmentRawValue: UInt = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
     private var globalBoldFontEnabled: Bool = false
     private var currentWebpageTemperature: Double = 50.0
+    private var currentWebpageBrightness: Double = 50.0 // New state for brightness
 
     private var webViewsReloadingAfterTermination: Set<WKWebView> = []
     private var activeWebView: WKWebView { webView1.isHidden ? webView2 : webView1 }
@@ -64,6 +67,7 @@ class ViewController: NSViewController,
         setupVisualEffectView()
         setupWebViews()
         setupTemperatureOverlay()
+        setupBrightnessOverlay() // Setup the new brightness overlay
         loadInitialContent()
         setupKeyboardShortcuts()
     }
@@ -142,6 +146,23 @@ class ViewController: NSViewController,
         ])
         NSLog("VC: Temperature overlay view setup.")
         applyTemperatureEffect()
+    }
+    
+    private func setupBrightnessOverlay() {
+        brightnessOverlayView = ClickThroughNSView()
+        brightnessOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        brightnessOverlayView.wantsLayer = true
+        brightnessOverlayView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        view.addSubview(brightnessOverlayView)
+        NSLayoutConstraint.activate([
+            brightnessOverlayView.topAnchor.constraint(equalTo: view.topAnchor),
+            brightnessOverlayView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            brightnessOverlayView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            brightnessOverlayView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+        NSLog("VC: Brightness overlay view setup.")
+        applyBrightnessEffect()
     }
 
     private func setupWebViews() {
@@ -282,8 +303,15 @@ class ViewController: NSViewController,
             currentWebpageTemperature = 50.0
             d.set(currentWebpageTemperature, forKey: ViewController.webpageTemperatureKey)
         }
+        
+        if d.object(forKey: ViewController.webpageBrightnessKey) != nil {
+            currentWebpageBrightness = d.double(forKey: ViewController.webpageBrightnessKey)
+        } else {
+            currentWebpageBrightness = 50.0
+            d.set(currentWebpageBrightness, forKey: ViewController.webpageBrightnessKey)
+        }
 
-        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale), WindowAlpha: \(currentWindowAlpha), WebViewAlpha: \(currentWebViewAlpha), DesktopAssignment: \(currentDesktopAssignmentRawValue), GlobalBold: \(globalBoldFontEnabled), Temperature: \(currentWebpageTemperature)")
+        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale), WindowAlpha: \(currentWindowAlpha), WebViewAlpha: \(currentWebViewAlpha), DesktopAssignment: \(currentDesktopAssignmentRawValue), GlobalBold: \(globalBoldFontEnabled), Temperature: \(currentWebpageTemperature), Brightness: \(currentWebpageBrightness)")
     }
 
     private func loadInitialContent() {
@@ -335,6 +363,27 @@ class ViewController: NSViewController,
             temperatureOverlayView.layer?.backgroundColor = NSColor.clear.cgColor
         }
         NSLog("VC: Applied temperature effect. Value: \(value)")
+    }
+    
+    private func applyBrightnessEffect() {
+        guard brightnessOverlayView != nil else { return }
+
+        let value = currentWebpageBrightness
+        let maxAlpha: CGFloat = 0.4 // Max darkness/brightness effect
+
+        if value < 49.0 {
+            // Darken
+            let alpha = (50.0 - value) / 50.0 * maxAlpha
+            brightnessOverlayView.layer?.backgroundColor = NSColor.black.withAlphaComponent(alpha).cgColor
+        } else if value > 51.0 {
+            // Brighten
+            let alpha = (value - 50.0) / 50.0 * maxAlpha
+            brightnessOverlayView.layer?.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
+        } else {
+            // Neutral
+            brightnessOverlayView.layer?.backgroundColor = NSColor.clear.cgColor
+        }
+        NSLog("VC: Applied brightness effect. Value: \(value)")
     }
 
 
@@ -399,8 +448,10 @@ class ViewController: NSViewController,
         webView1.isHidden.toggle()
         webView2.isHidden.toggle()
         let currentActiveWebView = activeWebView
-        view.addSubview(currentActiveWebView)
-        view.addSubview(temperatureOverlayView)
+        view.addSubview(currentActiveWebView, positioned: .below, relativeTo: temperatureOverlayView)
+        if let brightnessView = brightnessOverlayView {
+            view.addSubview(brightnessView, positioned: .above, relativeTo: temperatureOverlayView)
+        }
         applyZoom(to: activeWebView, scale: currentZoom(for: activeWebView))
         NSLog("VC: Calling attemptWebViewFocus after page toggle.")
         attemptWebViewFocus()
@@ -682,6 +733,12 @@ class ViewController: NSViewController,
         let temperatureSliderAndDisplay = NSStackView(views: [temperatureSlider, temperatureDisplayLabel]); temperatureSliderAndDisplay.orientation = .horizontal; temperatureSliderAndDisplay.spacing = hStackSpacing; temperatureSliderAndDisplay.alignment = .centerY
         let temperatureRow = createSettingRow(labelString: "Page Color Tone:", control: temperatureSliderAndDisplay, alignment: .centerY)
 
+        let brightnessSlider = NSSlider(value: currentWebpageBrightness, minValue: 0, maxValue: 100, target: nil, action: nil)
+        brightnessSlider.allowsTickMarkValuesOnly = false; brightnessSlider.numberOfTickMarks = 11; brightnessSlider.translatesAutoresizingMaskIntoConstraints = false
+        let brightnessDisplayLabel = NSTextField(labelWithString: "Darker / Brighter"); brightnessDisplayLabel.isEditable = false; brightnessDisplayLabel.isSelectable = false; brightnessDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; brightnessDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        let brightnessSliderAndDisplay = NSStackView(views: [brightnessSlider, brightnessDisplayLabel]); brightnessSliderAndDisplay.orientation = .horizontal; brightnessSliderAndDisplay.spacing = hStackSpacing; brightnessSliderAndDisplay.alignment = .centerY
+        let brightnessRow = createSettingRow(labelString: "Page Brightness:", control: brightnessSliderAndDisplay, alignment: .centerY)
+
         let globalBoldFontCheckbox = NSButton(checkboxWithTitle: "Force Bold Font Style on Web Pages", target: nil, action: nil)
         globalBoldFontCheckbox.state = globalBoldFontEnabled ? .on : .off
         globalBoldFontCheckbox.translatesAutoresizingMaskIntoConstraints = false
@@ -710,6 +767,7 @@ class ViewController: NSViewController,
         mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: desktopAssignmentRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
         mainVerticalStackView.addArrangedSubview(appearanceSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: appearanceSectionHeader); mainVerticalStackView.addArrangedSubview(windowAlphaRow); mainVerticalStackView.addArrangedSubview(webViewAlphaRow)
         mainVerticalStackView.addArrangedSubview(temperatureRow)
+        mainVerticalStackView.addArrangedSubview(brightnessRow) // Added brightness row
         mainVerticalStackView.addArrangedSubview(boldFontRow)
         mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: boldFontRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
         mainVerticalStackView.addArrangedSubview(globalShortcutSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: globalShortcutSectionHeader); mainVerticalStackView.addArrangedSubview(currentShortcutRow); mainVerticalStackView.addArrangedSubview(keyRow); mainVerticalStackView.addArrangedSubview(modifiersRow); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: modifiersRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
@@ -726,6 +784,7 @@ class ViewController: NSViewController,
                                              windowAlphaSlider: windowAlphaSlider, windowAlphaDisplayLabel: currentWindowAlphaDisplayLabel,
                                              webViewAlphaSlider: webViewAlphaSlider, webViewAlphaDisplayLabel: currentWebViewAlphaDisplayLabel,
                                              temperatureSlider: temperatureSlider,
+                                             brightnessSlider: brightnessSlider,
                                              globalBoldFontCB: globalBoldFontCheckbox,
                                              keyTF: keyTextField, optionCB: optionCheckbox, commandCB: commandCheckbox, shiftCB: shiftCheckbox, controlCB: controlCheckbox, currentShortcutDisplayLabel: currentShortcutDisplayLabel)
         }
@@ -738,6 +797,7 @@ class ViewController: NSViewController,
         windowAlphaSlider: NSSlider, windowAlphaDisplayLabel: NSTextField,
         webViewAlphaSlider: NSSlider, webViewAlphaDisplayLabel: NSTextField,
         temperatureSlider: NSSlider,
+        brightnessSlider: NSSlider,
         globalBoldFontCB: NSButton,
         keyTF: NSTextField, optionCB: NSButton, commandCB: NSButton, shiftCB: NSButton, controlCB: NSButton, currentShortcutDisplayLabel: NSTextField
     ) {
@@ -783,6 +843,12 @@ class ViewController: NSViewController,
             UserDefaults.standard.set(newTemperatureValue, forKey: ViewController.webpageTemperatureKey)
             applyTemperatureEffect()
             NSLog("VC: Settings - Webpage temperature set to: \(newTemperatureValue)")
+
+            let newBrightnessValue = brightnessSlider.doubleValue
+            currentWebpageBrightness = newBrightnessValue
+            UserDefaults.standard.set(newBrightnessValue, forKey: ViewController.webpageBrightnessKey)
+            applyBrightnessEffect()
+            NSLog("VC: Settings - Webpage brightness set to: \(newBrightnessValue)")
             
             let newBoldFontEnabled = globalBoldFontCB.state == .on
             if newBoldFontEnabled != self.globalBoldFontEnabled {
