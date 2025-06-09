@@ -1,5 +1,5 @@
 ## 2025.06.08 Version 1.3
-1. Implement configurable tone (Warm/Cold) options.
+1. Implement configurable tone (Warm/Cold) and brightness options.
 2. Add support for downloading attachments.
 
 
