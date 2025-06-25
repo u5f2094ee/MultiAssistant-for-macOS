@@ -10,7 +10,7 @@
 
 ## Overview
 
-**MultiAssistant** is a lightweight, dual-chat webapp that embeds both OpenAI ChatGPT and Google Gemini. Designed for seamless access and quick toggling, it integrates with the macOS menu bar and global keyboard shortcuts to provide a distraction-free interface for AI-powered conversations.
+**MultiAssistant** is a lightweight, multi-tab web app that embeds ChatGPT, Gemini and any other AI you modified. Designed for seamless access and quick toggling, it integrates with the macOS menu bar and global keyboard shortcuts to provide a distraction-free interface for AI-powered conversations.
 
 **//You can modify the Settings using your preferred AI tools.**
 
@@ -18,21 +18,21 @@
 
 ## Features
 
-- **Dual Chat Views**: Switch between ChatGPT (`https://chat.openai.com/`) and Gemini (`https://gemini.google.com/app`) with a single keyboard shortcut or the in-app toggle.
+- **Multi Chat Views**: Switch between Multi AI with a single keyboard shortcut or the in-app toggle.（Max to 10 tabs）
 - **Global Toggle Shortcut**: Configure a custom global hotkey (e.g., ⌥ + .) to show or hide the assistant from anywhere in macOS.
 - **Menu Bar Integration**:
   - Menu bar icon for quick show/hide.
   - Context menu items for Refresh, Zoom In/Out, Actual Size, Settings, and About.
 - **Auto-hide**: Automatically hides the window when the application loses focus (optional, configurable in Settings).
-- **Customizable URLs**: Change the ChatGPT and Gemini URLs in Settings to point to other AI endpoints or self-hosted instances.
+- **Customizable URLs**: Change the AI URLs in Settings to point to any AI endpoints or self-hosted instances.
 - **Modern Window Chrome**:
   - Rounded corners, and full-size content view for a sleek look.
   - No standard title bar buttons; window is movable by dragging the background.
-  - Automatically restores the previous window size and position, and retains cookies.
   - A beautifully styled window with blur and transparency effects with customizable settings.
 - **Focus Management**:
   - Ensures the active web view receives keyboard focus and places the cursor in the input area on show, for immediate typing.
-  - Toggle the global bold text style for all content.
+
+
 
 ---
 
