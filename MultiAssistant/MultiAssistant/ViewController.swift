@@ -19,16 +19,15 @@ class ViewController: NSViewController,
                      WKDownloadDelegate {
 
     // MARK: - UI Elements & State
-    private var webView1: WKWebView!
-    private var webView2: WKWebView!
+    private var webViews: [WKWebView?] = [] // MODIFIED: Array is now optional to allow deallocation
     private var visualEffectView: NSVisualEffectView!
     private var temperatureOverlayView: ClickThroughNSView!
-    private var brightnessOverlayView: ClickThroughNSView! // New view for brightness
+    private var brightnessOverlayView: ClickThroughNSView!
 
     // Configuration constants
-    private let defaultUrlString1 = "https://chat.openai.com/"
-    private let defaultUrlString2 = "https://gemini.google.com/app"
-    private let cornerRadiusValue: CGFloat = 30.0
+    private let webViewCount = 10
+    private let defaultUrlStrings = Array(repeating: "", count: 10)
+    private let cornerRadiusValue: CGFloat = 25.0
     private let zoomStep: CGFloat   = 0.1
     private let minZoom: CGFloat    = 0.5
     private let maxZoom: CGFloat    = 3.0
@@ -40,23 +39,33 @@ class ViewController: NSViewController,
     static let windowDesktopAssignmentKey = "windowDesktopAssignmentKey_v2"
     static let globalBoldFontKey = "globalBoldFontEnabledKey_MultiAssistant_v1"
     static let webpageTemperatureKey = "webpageTemperatureKey_v1"
-    static let webpageBrightnessKey = "webpageBrightnessKey_v1" // New key for brightness
+    static let webpageBrightnessKey = "webpageBrightnessKey_v1"
+    static let webTabEnabledKey = "webTabEnabledKey_v1"
+    static let webTabLabelsKey = "webTabLabelsKey_v1"
+    static let webTabPersistKey = "webTabPersistKey_v1"
+    static let unloadTimerDurationKey = "unloadTimerDurationKey_v1" // NEW: Key for timer duration
 
     // Runtime state
-    private var webView1ZoomScale: CGFloat = 1.0
-    private var webView2ZoomScale: CGFloat = 1.0
-    private var urlString1: String!
-    private var urlString2: String!
+    private var webViewZoomScales: [CGFloat] = []
+    private var urlStrings: [String] = []
+    private var webTabEnabledStates: [Bool] = []
+    private var webTabLabels: [String] = []
+    private var webTabPersistStates: [Bool] = []
+    private var unloadTimers: [Int: DispatchWorkItem] = [:]
+    private var activeWebViewIndex: Int = 0
     private var currentWindowAlpha: CGFloat = 1.0
     private var currentWebViewAlpha: CGFloat = 0.8
     private var currentDesktopAssignmentRawValue: UInt = NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue
     private var globalBoldFontEnabled: Bool = false
     private var currentWebpageTemperature: Double = 50.0
-    private var currentWebpageBrightness: Double = 50.0 // New state for brightness
+    private var currentWebpageBrightness: Double = 50.0
+    private var currentUnloadDelay: TimeInterval = 300.0 // NEW: User-configurable unload delay
 
     private var webViewsReloadingAfterTermination: Set<WKWebView> = []
-    private var activeWebView: WKWebView { webView1.isHidden ? webView2 : webView1 }
+    // MODIFIED: This now force-unwraps, relying on logic to ensure the active view is never nil
+    private var activeWebView: WKWebView { webViews[activeWebViewIndex]! }
     private var windowChromeConfigured = false
+    private var hudWorkItem: DispatchWorkItem?
 
     // MARK: - View / Window Lifecycle
     override func viewDidLoad() {
@@ -67,9 +76,14 @@ class ViewController: NSViewController,
         setupVisualEffectView()
         setupWebViews()
         setupTemperatureOverlay()
-        setupBrightnessOverlay() // Setup the new brightness overlay
+        setupBrightnessOverlay()
         loadInitialContent()
         setupKeyboardShortcuts()
+        
+        if !webTabEnabledStates[activeWebViewIndex] {
+            activeWebViewIndex = webTabEnabledStates.firstIndex(of: true) ?? 0
+            switchToPage(index: activeWebViewIndex, showHUD: false) // Don't show HUD on initial load
+        }
     }
 
     override func viewDidAppear() {
@@ -109,7 +123,7 @@ class ViewController: NSViewController,
         view.layer?.masksToBounds = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
         NSLog("VC: Container layer background set to clear for blur effect.")
-        view.layer?.borderWidth = 1.9
+        view.layer?.borderWidth = 0.7
         view.layer?.borderColor = NSColor.separatorColor.cgColor
         NSLog("VC: Container layer configured with custom border.")
     }
@@ -165,37 +179,42 @@ class ViewController: NSViewController,
         applyBrightnessEffect()
     }
 
-    private func setupWebViews() {
+    // NEW: Helper to create a configured webview instance
+    private func createWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         let cssString = "html, body { background-color: transparent !important; }"
         let userScript = WKUserScript(source: cssString, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         config.userContentController.addUserScript(userScript)
 
-        webView1 = WKWebView(frame: .zero, configuration: config)
-        webView2 = WKWebView(frame: .zero, configuration: config)
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.alphaValue = currentWebViewAlpha
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        return webView
+    }
 
-        let webViews: [WKWebView] = [webView1, webView2]
-        for wv in webViews {
-            wv.setValue(false, forKey: "drawsBackground")
-            wv.alphaValue = currentWebViewAlpha
-            NSLog("VC: Set WKWebView alphaValue to \(currentWebViewAlpha) for semi-transparent web content.")
-            wv.navigationDelegate = self
-            wv.uiDelegate = self
-            // The download delegate is set on the WKDownload object itself, not here.
-            // This line was causing the error and has been removed.
-            wv.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(wv)
-            NSLayoutConstraint.activate([
-                wv.topAnchor.constraint(equalTo: view.topAnchor),
-                wv.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                wv.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                wv.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-            ])
+    private func setupWebViews() {
+        // Initialize the array with nil placeholders
+        webViews = Array(repeating: nil, count: webViewCount)
+        // Create webviews only for enabled tabs initially
+        for i in 0..<webViewCount {
+            if webTabEnabledStates[i] {
+                let newWebView = createWebView()
+                webViews[i] = newWebView
+                view.addSubview(newWebView)
+                NSLayoutConstraint.activate([
+                    newWebView.topAnchor.constraint(equalTo: view.topAnchor),
+                    newWebView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                    newWebView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                    newWebView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+                ])
+                newWebView.isHidden = (i != activeWebViewIndex)
+            }
         }
-        
-        webView2.isHidden = true
-        NSLog("VC: WebViews setup complete with transparency for blur effect and \(currentWebViewAlpha * 100)% opaque content.")
+        NSLog("VC: WebViews setup complete. Initialized \(webTabEnabledStates.filter { $0 }.count) views.")
     }
 
     private func setupWindowChrome() {
@@ -243,14 +262,36 @@ class ViewController: NSViewController,
 
     private func setupKeyboardShortcuts() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self, event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers else { return event }
-            if self.view.window?.attachedSheet != nil { return event } // Ignore if a sheet (like settings) is open
+            guard let self = self, event.modifierFlags.contains(.command) else { return event }
+            if self.view.window?.attachedSheet != nil { return event }
+
+            switch Int(event.keyCode) {
+            case kVK_ANSI_Grave:
+                self.cycleToNextPage()
+                return nil
+            case kVK_Delete:
+                self.actualSizePage()
+                return nil
+            default:
+                break
+            }
+            
+            guard let key = event.charactersIgnoringModifiers else { return event }
+
+            if let keyInt = Int(key) {
+                let pageIndex = (keyInt == 0) ? 9 : keyInt - 1
+                if pageIndex >= 0 && pageIndex < self.webViewCount {
+                    if self.webTabEnabledStates[pageIndex] {
+                        self.switchToPage(index: pageIndex)
+                    }
+                    return nil
+                }
+            }
+
             switch key.lowercased() {
-            case "1": self.togglePage(); return nil
             case "r": self.refreshCurrentPage(); return nil
             case "=","+", "§": self.zoomInPage(); return nil
             case "-": self.zoomOutPage(); return nil
-            case "0": self.actualSizePage(); return nil
             case ",": self.openSettings(); return nil
             default: return event
             }
@@ -260,12 +301,49 @@ class ViewController: NSViewController,
 
     private func loadSettings() {
         let d = UserDefaults.standard
-        urlString1 = d.string(forKey: "customURL1_MultiAssistant_v1") ?? defaultUrlString1
-        urlString2 = d.string(forKey: "customURL2_MultiAssistant_v1") ?? defaultUrlString2
-        let savedZoom1 = d.float(forKey: "webView1ZoomScale_MultiAssistant_v1")
-        webView1ZoomScale = (savedZoom1 > 0.01) ? CGFloat(savedZoom1) : 1.0
-        let savedZoom2 = d.float(forKey: "webView2ZoomScale_MultiAssistant_v1")
-        webView2ZoomScale = (savedZoom2 > 0.01) ? CGFloat(savedZoom2) : 1.0
+        
+        urlStrings.removeAll()
+        webViewZoomScales.removeAll()
+        webTabEnabledStates.removeAll()
+        webTabLabels.removeAll()
+        webTabPersistStates.removeAll()
+        
+        for i in 0..<webViewCount {
+            let urlKey = "customURL\(i+1)_MultiAssistant_v2"
+            let zoomKey = "webView\(i+1)ZoomScale_MultiAssistant_v2"
+            
+            let url = d.string(forKey: urlKey) ?? defaultUrlStrings[i]
+            urlStrings.append(url)
+            
+            let savedZoom = d.float(forKey: zoomKey)
+            let zoom = (savedZoom > 0.01) ? CGFloat(savedZoom) : 1.0
+            webViewZoomScales.append(zoom)
+        }
+        
+        if let savedEnabledStates = d.array(forKey: ViewController.webTabEnabledKey) as? [Bool], savedEnabledStates.count == webViewCount {
+            webTabEnabledStates = savedEnabledStates
+        } else {
+            webTabEnabledStates = [true, true] + Array(repeating: false, count: webViewCount - 2)
+        }
+        
+        if let savedLabels = d.stringArray(forKey: ViewController.webTabLabelsKey), savedLabels.count == webViewCount {
+            webTabLabels = savedLabels
+        } else {
+            webTabLabels = Array(repeating: "", count: webViewCount)
+        }
+        
+        if let savedPersistStates = d.array(forKey: ViewController.webTabPersistKey) as? [Bool], savedPersistStates.count == webViewCount {
+            webTabPersistStates = savedPersistStates
+        } else {
+            webTabPersistStates = Array(repeating: false, count: webViewCount)
+        }
+
+        // NEW: Load unload delay setting
+        if d.object(forKey: ViewController.unloadTimerDurationKey) != nil {
+            currentUnloadDelay = d.double(forKey: ViewController.unloadTimerDurationKey)
+        } else {
+            currentUnloadDelay = 300.0 // Default to 5 minutes
+        }
 
         if d.object(forKey: ViewController.windowAlphaKey) != nil {
             currentWindowAlpha = CGFloat(d.double(forKey: ViewController.windowAlphaKey))
@@ -311,12 +389,72 @@ class ViewController: NSViewController,
             d.set(currentWebpageBrightness, forKey: ViewController.webpageBrightnessKey)
         }
 
-        NSLog("VC: Settings loaded. URL1: \(urlString1 ?? "nil"), URL2: \(urlString2 ?? "nil"), Zoom1: \(webView1ZoomScale), Zoom2: \(webView2ZoomScale), WindowAlpha: \(currentWindowAlpha), WebViewAlpha: \(currentWebViewAlpha), DesktopAssignment: \(currentDesktopAssignmentRawValue), GlobalBold: \(globalBoldFontEnabled), Temperature: \(currentWebpageTemperature), Brightness: \(currentWebpageBrightness)")
+        NSLog("VC: Settings loaded for \(webViewCount) pages.")
     }
 
     private func loadInitialContent() {
-        if let u1 = URL(string: urlString1) { webView1.load(URLRequest(url: u1)) } else { NSLog("VC: Invalid URL1: \(urlString1 ?? "nil")")}
-        if let u2 = URL(string: urlString2) { webView2.load(URLRequest(url: u2)) } else { NSLog("VC: Invalid URL2: \(urlString2 ?? "nil")")}
+        for (index, _) in urlStrings.enumerated() {
+            if webTabEnabledStates[index] {
+                loadPage(at: index)
+            }
+        }
+    }
+    
+    // MARK: - Page Loading/Unloading
+    
+    private func loadPage(at index: Int) {
+        guard index >= 0, index < webViewCount, webTabEnabledStates[index] else { return }
+        
+        // If the webview for this index doesn't exist, create it.
+        if webViews[index] == nil {
+            let newWebView = createWebView()
+            webViews[index] = newWebView
+            view.addSubview(newWebView, positioned: .below, relativeTo: temperatureOverlayView)
+            NSLayoutConstraint.activate([
+                newWebView.topAnchor.constraint(equalTo: view.topAnchor),
+                newWebView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                newWebView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                newWebView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            ])
+            newWebView.isHidden = (index != activeWebViewIndex)
+            NSLog("VC: Re-created webview for index \(index).")
+        }
+
+        guard let webView = webViews[index] else { return }
+        let urlString = urlStrings[index]
+
+        // Only load if it's currently blank and has a valid URL
+        if webView.url == nil || webView.url?.absoluteString == "about:blank" {
+             if let url = URL(string: urlString) {
+                NSLog("VC: Loading page at index \(index). URL: \(url.absoluteString)")
+                webView.load(URLRequest(url: url))
+             } else if !urlString.isEmpty {
+                 NSLog("VC: Cannot load page at index \(index), invalid URL: \(urlString)")
+                 webView.loadHTMLString("<html><body>Invalid URL</body></html>", baseURL: nil)
+             } else {
+                 webView.loadHTMLString("<html><body></body></html>", baseURL: nil)
+             }
+        } else {
+             NSLog("VC: Page at index \(index) is already loaded. Skipping reload.")
+        }
+    }
+    
+    // MODIFIED: This now deallocates the webview entirely
+    private func unloadPage(at index: Int) {
+        guard index >= 0, index < webViewCount, webViews[index] != nil else { return }
+        
+        if index == activeWebViewIndex || webTabPersistStates[index] {
+            NSLog("VC: Unload for page \(index) aborted (is active or persisted).")
+            unloadTimers.removeValue(forKey: index)
+            return
+        }
+        
+        NSLog("VC: Deallocating webview and process for index \(index).")
+        let webViewToUnload = webViews[index]
+        webViewToUnload?.removeFromSuperview()
+        webViews[index] = nil // This deinitializes the WKWebView and its process
+        
+        unloadTimers.removeValue(forKey: index)
     }
     
     // MARK: - Content Styling (Global Bold & Temperature)
@@ -342,8 +480,8 @@ class ViewController: NSViewController,
     }
     
     private func updateGlobalBoldStyleForAllWebViews() {
-        applyGlobalBoldStyle(to: webView1)
-        applyGlobalBoldStyle(to: webView2)
+        // Use compactMap to safely unwrap optionals
+        webViews.compactMap { $0 }.forEach { applyGlobalBoldStyle(to: $0) }
         NSLog("VC: Updated global bold style for all webviews. Enabled: \(globalBoldFontEnabled)")
     }
     
@@ -389,11 +527,21 @@ class ViewController: NSViewController,
 
     // MARK: - Focus Handling
     @objc func attemptWebViewFocus() {
+        guard webTabEnabledStates.contains(true) else {
+            NSLog("VC: attemptWebViewFocus - Aborted, no tabs enabled.")
+            return
+        }
+        
+        // Ensure the active webview exists before trying to focus it
+        guard let _ = webViews[activeWebViewIndex] else {
+            NSLog("VC: attemptWebViewFocus - Aborted, active webview at index \(activeWebViewIndex) is nil.")
+            return
+        }
+        
         NSLog("VC: attemptWebViewFocus called.")
         guard let window = self.view.window else { NSLog("VC: attemptWebViewFocus - No window."); return }
         let webViewToFocus = self.activeWebView
-        let webViewName = webViewToFocus == self.webView1 ? "WebView1" : "WebView2"
-        NSLog("VC: attemptWebViewFocus for \(webViewName). AppIsActive: \(NSApp.isActive), WindowIsKey: \(window.isKeyWindow), WindowIsVisible: \(window.isVisible)")
+        NSLog("VC: attemptWebViewFocus for WebView at index \(activeWebViewIndex). AppIsActive: \(NSApp.isActive), WindowIsKey: \(window.isKeyWindow), WindowIsVisible: \(window.isVisible)")
         if !window.isKeyWindow {
             NSLog("VC: attemptWebViewFocus - Window is NOT key. Attempting to make it key.")
             window.makeKeyAndOrderFront(nil)
@@ -408,13 +556,12 @@ class ViewController: NSViewController,
     }
 
     private func proceedWithFirstResponder(for webViewToFocus: WKWebView, window: NSWindow) {
-        let webViewName = webViewToFocus == self.webView1 ? "WebView1" : "WebView2"
-        NSLog("VC: proceedWithFirstResponder for \(webViewName). Current FR before: \(String(describing: window.firstResponder))")
+        NSLog("VC: proceedWithFirstResponder for WebView at index \(activeWebViewIndex). Current FR before: \(String(describing: window.firstResponder))")
         if window.makeFirstResponder(webViewToFocus) {
-            NSLog("VC: proceedWithFirstResponder - SUCCESS: Made \(webViewName) first responder.")
+            NSLog("VC: proceedWithFirstResponder - SUCCESS: Made WebView at index \(activeWebViewIndex) first responder.")
             executeJavaScriptFocus(reason: "proceedWithFirstResponder_success")
         } else {
-            NSLog("VC: proceedWithFirstResponder - FAILED: Could not make \(webViewName) first responder.")
+            NSLog("VC: proceedWithFirstResponder - FAILED: Could not make WebView at index \(activeWebViewIndex) first responder.")
             if window.firstResponder != webViewToFocus && window.canBecomeKey {
                  NSLog("VC: proceedWithFirstResponder - Making window's content view (self.view) first responder as a fallback.")
                  if window.makeFirstResponder(self.view) { NSLog("VC: proceedWithFirstResponder - SUCCESS: Made self.view first responder.") }
@@ -443,46 +590,108 @@ class ViewController: NSViewController,
     }
 
     // MARK: - Actions & Web Control
-    @objc func togglePage() {
-        NSLog("VC: Toggling page.")
-        webView1.isHidden.toggle()
-        webView2.isHidden.toggle()
+    @objc func cycleToNextPage() {
+        guard webTabEnabledStates.contains(true) else {
+            NSLog("VC: Cycle Page - No enabled tabs to cycle through.")
+            return
+        }
+        
+        var nextIndex = (activeWebViewIndex + 1) % webViewCount
+        while !webTabEnabledStates[nextIndex] {
+            nextIndex = (nextIndex + 1) % webViewCount
+            if nextIndex == activeWebViewIndex { return }
+        }
+        switchToPage(index: nextIndex)
+    }
+    
+    @objc func switchToPage(index: Int, showHUD: Bool = true) {
+        guard webTabEnabledStates[index], index != activeWebViewIndex else { return }
+        NSLog("VC: Switching page from index \(activeWebViewIndex) to \(index).")
+        
+        let oldIndex = activeWebViewIndex
+        
+        // --- Logic for the page we are LEAVING ---
+        // Schedule unload only if the feature is not disabled ("Never" option)
+        if currentUnloadDelay > 0 && oldIndex >= 0 && oldIndex < webViewCount && !webTabPersistStates[oldIndex] {
+            unloadTimers[oldIndex]?.cancel()
+            NSLog("VC: Scheduling unload for non-persisted page \(oldIndex) in \(currentUnloadDelay) seconds.")
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.unloadPage(at: oldIndex)
+            }
+            unloadTimers[oldIndex] = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + currentUnloadDelay, execute: workItem)
+        }
+        
+        // --- Logic for the page we are SWITCHING TO ---
+        if let timer = unloadTimers[index] {
+            timer.cancel()
+            unloadTimers.removeValue(forKey: index)
+            NSLog("VC: Cancelled pending unload for page \(index) as it is now active.")
+        }
+        
+        // This will create and/or load the page if needed
+        loadPage(at: index)
+
+        // --- Original logic to update UI ---
+        activeWebViewIndex = index
+        
+        for (i, webView) in webViews.enumerated() {
+            webView?.isHidden = (i != activeWebViewIndex)
+        }
+        
+        // This relies on `loadPage` having already created the webview if it was nil
         let currentActiveWebView = activeWebView
         view.addSubview(currentActiveWebView, positioned: .below, relativeTo: temperatureOverlayView)
         if let brightnessView = brightnessOverlayView {
             view.addSubview(brightnessView, positioned: .above, relativeTo: temperatureOverlayView)
         }
-        applyZoom(to: activeWebView, scale: currentZoom(for: activeWebView))
-        NSLog("VC: Calling attemptWebViewFocus after page toggle.")
+        
+        if showHUD {
+            showTabSwitchHUD(for: index)
+        }
+        
+        applyZoom(to: currentActiveWebView, scale: currentZoom())
+        NSLog("VC: Calling attemptWebViewFocus after page switch.")
         attemptWebViewFocus()
-        NSLog("VC: Active webview is now: \(activeWebView == webView1 ? "WebView1" : "WebView2")")
+        NSLog("VC: Active webview is now at index: \(activeWebViewIndex)")
     }
 
     @objc func refreshCurrentPage() {
-        NSLog("VC: Refreshing current page: \(activeWebView == webView1 ? "WebView1" : "WebView2")")
-        webViewsReloadingAfterTermination.insert(activeWebView)
-        activeWebView.reload()
+        NSLog("VC: Refreshing current page at index: \(activeWebViewIndex)")
+        guard let webView = webViews[activeWebViewIndex] else {
+            NSLog("VC: Cannot refresh, webview at index \(activeWebViewIndex) is nil.")
+            return
+        }
+        webViewsReloadingAfterTermination.insert(webView)
+        webView.reload()
     }
 
     @objc func zoomInPage()  { changeZoom(by: +zoomStep) }
     @objc func zoomOutPage() { changeZoom(by: -zoomStep) }
-    @objc func actualSizePage() { setZoom(1.0, for: activeWebView) }
+    @objc func actualSizePage() { setZoom(1.0) }
 
     private func changeZoom(by delta: CGFloat) {
-        let oldScale = currentZoom(for: activeWebView)
+        let oldScale = currentZoom()
         let newScale = clamp(oldScale + delta, min: minZoom, max: maxZoom)
-        setZoom(newScale, for: activeWebView)
+        setZoom(newScale)
     }
 
-    private func currentZoom(for wv: WKWebView) -> CGFloat { (wv == webView1) ? webView1ZoomScale : webView2ZoomScale }
+    private func currentZoom() -> CGFloat { webViewZoomScales[activeWebViewIndex] }
+    
+    private func zoomScale(for wv: WKWebView) -> CGFloat {
+        if let index = webViews.firstIndex(of: wv) {
+            return webViewZoomScales[index]
+        }
+        return 1.0
+    }
 
-    private func setZoom(_ scale: CGFloat, for wv: WKWebView) {
-        let targetScaleKey: String
-        if wv == webView1 { webView1ZoomScale = scale; targetScaleKey = "webView1ZoomScale_MultiAssistant_v1" }
-        else { webView2ZoomScale = scale; targetScaleKey = "webView2ZoomScale_MultiAssistant_v1" }
+    private func setZoom(_ scale: CGFloat) {
+        guard webViews[activeWebViewIndex] != nil else { return }
+        webViewZoomScales[activeWebViewIndex] = scale
+        let targetScaleKey = "webView\(activeWebViewIndex + 1)ZoomScale_MultiAssistant_v2"
         UserDefaults.standard.set(Float(scale), forKey: targetScaleKey)
-        applyZoom(to: wv, scale: scale)
-        NSLog("VC: Zoom set to \(scale) for \(wv == webView1 ? "WebView1" : "WebView2")")
+        applyZoom(to: activeWebView, scale: scale)
+        NSLog("VC: Zoom set to \(scale) for WebView at index \(activeWebViewIndex)")
     }
 
     private func clamp(_ value: CGFloat, min: CGFloat, max: CGFloat) -> CGFloat { Swift.max(min, Swift.min(max, value)) }
@@ -494,23 +703,30 @@ class ViewController: NSViewController,
 
     // MARK: - WKNavigationDelegate
     func webView(_ wv: WKWebView, didFinish navigation: WKNavigation!) {
-        let webViewName = wv == webView1 ? "WebView1" : "WebView2"
-        NSLog("VC: WebView \(webViewName) didFinish navigation. URL: \(wv.url?.absoluteString ?? "N/A").")
-        applyZoom(to: wv, scale: currentZoom(for: wv))
+        guard let index = webViews.firstIndex(of: wv) else { return }
+        NSLog("VC: WebView at index \(index) didFinish navigation. URL: \(wv.url?.absoluteString ?? "N/A").")
+        applyZoom(to: wv, scale: zoomScale(for: wv))
         applyGlobalBoldStyle(to: wv)
         
         if view.window?.isKeyWindow == true || webViewsReloadingAfterTermination.contains(wv) {
-            NSLog("VC: WebView \(webViewName) finished, attempting focus (window is key or was reloading).")
-            attemptWebViewFocus()
-        } else { NSLog("VC: WebView \(webViewName) finished, but window not key and not specifically reloading. Focus not attempted automatically.") }
+            NSLog("VC: WebView \(index) finished, attempting focus (window is key or was reloading).")
+            if index == activeWebViewIndex {
+                 attemptWebViewFocus()
+            }
+        } else { NSLog("VC: WebView \(index) finished, but window not key and not specifically reloading. Focus not attempted automatically.") }
         webViewsReloadingAfterTermination.remove(wv)
     }
 
     func webViewWebContentProcessDidTerminate(_ wv: WKWebView) {
-        let webViewName = wv == webView1 ? "WebView1" : "WebView2"
-        NSLog("VC: CRITICAL - WebView \(webViewName) content process did terminate. Reloading.")
-        webViewsReloadingAfterTermination.insert(wv)
-        wv.reload()
+        guard let index = webViews.firstIndex(of: wv) else { return }
+        NSLog("VC: CRITICAL - WebView at index \(index) content process did terminate. Reloading.")
+        
+        // Since the process is gone, we must fully recreate the webview
+        unloadPage(at: index) // This will set webViews[index] to nil
+        // If the terminated page was the active one, reload it immediately.
+        if index == activeWebViewIndex {
+            loadPage(at: index)
+        }
     }
     
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -541,27 +757,21 @@ class ViewController: NSViewController,
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        let webViewName = (webView == webView1) ? "Page 1" : "Page 2"
+        let webViewName = (webViews.firstIndex(of: webView).map { "Page \($0 + 1)" }) ?? "Unknown Page"
         NSLog("VC: \(webViewName) failed provisional navigation: \(error.localizedDescription)")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        let webViewName = (webView == webView1) ? "Page 1" : "Page 2"
+        let webViewName = (webViews.firstIndex(of: webView).map { "Page \($0 + 1)" }) ?? "Unknown Page"
         NSLog("VC: \(webViewName) failed navigation: \(error.localizedDescription)")
     }
     
     // MARK: - WKUIDelegate & Download Handling
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        guard let url = navigationAction.request.url else { return nil }
-
-        NSLog("VC: createWebViewWith triggered for URL: \(url.absoluteString). Intercepting as potential download.")
-        
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(url.absoluteString, forType: .string)
-
-        showClipboardNotification(message: "Download URL has been copied")
-
+        if let url = navigationAction.request.url {
+            NSLog("VC: Intercepted request to create a new web view for URL: \(url.absoluteString). Opening in default browser.")
+            NSWorkspace.shared.open(url)
+        }
         return nil
     }
     
@@ -690,54 +900,136 @@ class ViewController: NSViewController,
         }
         NSLog("VC: PresentSettingsAlert - Preparing settings UI.")
         let alert = NSAlert(); alert.messageText = "MultiAssistant Settings"; alert.informativeText = "Customize URLs, window behavior, global shortcuts, and appearance."; alert.addButton(withTitle: "Save Changes"); alert.addButton(withTitle: "Cancel")
-        let desiredAccessoryViewWidth: CGFloat = 720; let labelColumnWidth: CGFloat = 160; let hStackSpacing: CGFloat = 12; let vStackRowSpacing: CGFloat = 16; let sectionHeaderSpacing: CGFloat = 8; let sectionBottomSpacing: CGFloat = 24; let outerPadding: CGFloat = 25
+        
+        // MODIFIED: Increased width for better layout
+        let desiredAccessoryViewWidth: CGFloat = 800; let labelColumnWidth: CGFloat = 180; let hStackSpacing: CGFloat = 12; let vStackRowSpacing: CGFloat = 10; let sectionHeaderSpacing: CGFloat = 8; let sectionBottomSpacing: CGFloat = 24; let outerPadding: CGFloat = 25
 
-        func createSettingRow(labelString: String, control: NSView, alignment: NSLayoutConstraint.Attribute = .firstBaseline) -> NSStackView {
+        func createSettingRow(labelString: String, control: NSView) -> NSStackView {
             let label = NSTextField(labelWithString: labelString); label.alignment = .right; label.translatesAutoresizingMaskIntoConstraints = false; label.widthAnchor.constraint(equalToConstant: labelColumnWidth).isActive = true
-            control.translatesAutoresizingMaskIntoConstraints = false; control.setContentHuggingPriority(.defaultLow, for: .horizontal); control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let hStack = NSStackView(views: [label, control]); hStack.orientation = .horizontal; hStack.spacing = hStackSpacing; hStack.alignment = alignment
-            if let textField = control as? NSTextField { textField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true }
-            if let segmentedControl = control as? NSSegmentedControl { segmentedControl.widthAnchor.constraint(greaterThanOrEqualToConstant: 250).isActive = true}
+            control.translatesAutoresizingMaskIntoConstraints = false
+            let hStack = NSStackView(views: [label, control]); hStack.orientation = .horizontal; hStack.spacing = hStackSpacing; hStack.alignment = .firstBaseline
             return hStack
         }
+        
+        let mainVerticalStackView = NSStackView(); mainVerticalStackView.orientation = .vertical; mainVerticalStackView.spacing = vStackRowSpacing; mainVerticalStackView.alignment = .leading; mainVerticalStackView.edgeInsets = NSEdgeInsets(top: outerPadding, left: outerPadding, bottom: outerPadding, right: outerPadding)
 
+        // --- URL Section ---
         let urlSectionHeader = createSectionHeader(title: "Web Page URLs")
-        let url1TextField = NSTextField(string: urlString1 ?? defaultUrlString1); url1TextField.placeholderString = "e.g., https://chat.openai.com"; let url1Row = createSettingRow(labelString: "Page 1 URL:", control: url1TextField)
-        let url2TextField = NSTextField(string: urlString2 ?? defaultUrlString2); url2TextField.placeholderString = "e.g., https://gemini.google.com"; let url2Row = createSettingRow(labelString: "Page 2 URL:", control: url2TextField)
+        mainVerticalStackView.addArrangedSubview(urlSectionHeader)
+        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: urlSectionHeader)
+        
+        let urlNoteLabel = NSTextField(labelWithString: "Please enter full URLs (e.g., https://...)")
+        urlNoteLabel.textColor = .secondaryLabelColor
+        urlNoteLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let noteIndentView = NSView(); noteIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true
+        let noteRow = NSStackView(views: [noteIndentView, urlNoteLabel]); noteRow.orientation = .horizontal; noteRow.spacing = 0
+        mainVerticalStackView.addArrangedSubview(noteRow)
+        
+        var urlTextFields: [NSTextField] = []
+        var labelTextFields: [NSTextField] = []
+        var enabledCheckboxes: [NSButton] = []
+        var persistCheckboxes: [NSButton] = []
+        
+        for i in 0..<webViewCount {
+            let urlTextField = NSTextField(string: urlStrings[i])
+            urlTextField.placeholderString = "e.g., https://openai.com"
+            urlTextField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            
+            let labelTextField = NSTextField(string: webTabLabels[i])
+            labelTextField.placeholderString = "Label"
+            labelTextField.widthAnchor.constraint(equalToConstant: 120).isActive = true
+            
+            let enabledCheckbox = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
+            enabledCheckbox.state = webTabEnabledStates[i] ? .on : .off
+            
+            let persistCheckbox = NSButton(checkboxWithTitle: "Persist", target: nil, action: nil)
+            persistCheckbox.state = webTabPersistStates[i] ? .on : .off
+            
+            let controlStack = NSStackView(views: [urlTextField, labelTextField, enabledCheckbox, persistCheckbox])
+            controlStack.orientation = .horizontal
+            controlStack.spacing = hStackSpacing
+            
+            let urlRow = createSettingRow(labelString: "Page \(i+1):", control: controlStack)
+            urlTextFields.append(urlTextField)
+            labelTextFields.append(labelTextField)
+            enabledCheckboxes.append(enabledCheckbox)
+            persistCheckboxes.append(persistCheckbox)
+            mainVerticalStackView.addArrangedSubview(urlRow)
+        }
+        
+        if let lastUrlRow = mainVerticalStackView.arrangedSubviews.last {
+            mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: lastUrlRow)
+        }
+        
+        mainVerticalStackView.addArrangedSubview(createSeparatorBox())
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
 
+        // --- Behavior Section ---
         let behaviorSectionHeader = createSectionHeader(title: "Window Behavior")
+        mainVerticalStackView.addArrangedSubview(behaviorSectionHeader)
+        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: behaviorSectionHeader)
+
+        // NEW: Unload Timer Duration Setting
+        let unloadPopup = NSPopUpButton(frame: .zero)
+        unloadPopup.addItems(withTitles: ["1 Minute", "5 Minutes", "15 Minutes", "30 Minutes", "Never"])
+        unloadPopup.item(withTitle: "1 Minute")?.representedObject = 60.0
+        unloadPopup.item(withTitle: "5 Minutes")?.representedObject = 300.0
+        unloadPopup.item(withTitle: "15 Minutes")?.representedObject = 900.0
+        unloadPopup.item(withTitle: "30 Minutes")?.representedObject = 1800.0
+        unloadPopup.item(withTitle: "Never")?.representedObject = -1.0
+        
+        if let selectedItem = unloadPopup.itemArray.first(where: { ($0.representedObject as? Double) == currentUnloadDelay }) {
+            unloadPopup.select(selectedItem)
+        } else {
+            unloadPopup.selectItem(withTitle: "5 Minutes")
+        }
+        let unloadRow = createSettingRow(labelString: "Unload Inactive Tabs After:", control: unloadPopup); unloadRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(unloadRow)
+
         let autohideCheckbox = NSButton(checkboxWithTitle: "Auto-hide window when application is inactive", target: nil, action: nil); autohideCheckbox.state = UserDefaults.standard.bool(forKey: AppDelegate.autohideWindowKey) ? .on : .off; autohideCheckbox.translatesAutoresizingMaskIntoConstraints = false
         let autohideIndentView = NSView(); autohideIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let autohideControlRow = NSStackView(views: [autohideIndentView, autohideCheckbox]); autohideControlRow.orientation = .horizontal; autohideControlRow.spacing = 0; autohideControlRow.alignment = .firstBaseline
+        mainVerticalStackView.addArrangedSubview(autohideControlRow)
         
         let desktopAssignmentControl = NSSegmentedControl(labels: ["All Desktops", "This Desktop", "Standard"], trackingMode: .selectOne, target: nil, action: nil)
         desktopAssignmentControl.segmentStyle = .texturedRounded
         if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.canJoinAllSpaces.rawValue { desktopAssignmentControl.selectedSegment = 0
         } else if currentDesktopAssignmentRawValue == NSWindow.CollectionBehavior.moveToActiveSpace.rawValue { desktopAssignmentControl.selectedSegment = 1
         } else { desktopAssignmentControl.selectedSegment = 2 }
-        let desktopAssignmentRow = createSettingRow(labelString: "Assign Window To:", control: desktopAssignmentControl, alignment: .centerY)
+        let desktopAssignmentRow = createSettingRow(labelString: "Assign Window To:", control: desktopAssignmentControl); desktopAssignmentRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(desktopAssignmentRow)
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: desktopAssignmentRow)
+        mainVerticalStackView.addArrangedSubview(createSeparatorBox())
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
 
+        // --- Appearance Section ---
         let appearanceSectionHeader = createSectionHeader(title: "Window Appearance & Content")
+        mainVerticalStackView.addArrangedSubview(appearanceSectionHeader)
+        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: appearanceSectionHeader)
         let windowAlphaSlider = NSSlider(value: Double(currentWindowAlpha), minValue: 0.1, maxValue: 1.0, target: nil, action: nil); windowAlphaSlider.allowsTickMarkValuesOnly = false; windowAlphaSlider.numberOfTickMarks = 10; windowAlphaSlider.translatesAutoresizingMaskIntoConstraints = false
         let currentWindowAlphaDisplayLabel = NSTextField(labelWithString: String(format: "Overall Opacity: %.0f%%", currentWindowAlpha * 100)); currentWindowAlphaDisplayLabel.isEditable = false; currentWindowAlphaDisplayLabel.isSelectable = false; currentWindowAlphaDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; currentWindowAlphaDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let windowAlphaSliderAndDisplay = NSStackView(views: [windowAlphaSlider, currentWindowAlphaDisplayLabel]); windowAlphaSliderAndDisplay.orientation = .horizontal; windowAlphaSliderAndDisplay.spacing = hStackSpacing; windowAlphaSliderAndDisplay.alignment = .centerY
-        let windowAlphaRow = createSettingRow(labelString: "Window Transparency:", control: windowAlphaSliderAndDisplay, alignment: .centerY)
+        let windowAlphaRow = createSettingRow(labelString: "Window Transparency:", control: windowAlphaSliderAndDisplay); windowAlphaRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(windowAlphaRow)
 
         let webViewAlphaSlider = NSSlider(value: Double(currentWebViewAlpha), minValue: 0.1, maxValue: 1.0, target: nil, action: nil); webViewAlphaSlider.allowsTickMarkValuesOnly = false; webViewAlphaSlider.numberOfTickMarks = 10; webViewAlphaSlider.translatesAutoresizingMaskIntoConstraints = false
         let currentWebViewAlphaDisplayLabel = NSTextField(labelWithString: String(format: "Content Opacity: %.0f%%", currentWebViewAlpha * 100)); currentWebViewAlphaDisplayLabel.isEditable = false; currentWebViewAlphaDisplayLabel.isSelectable = false; currentWebViewAlphaDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; currentWebViewAlphaDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let webViewAlphaSliderAndDisplay = NSStackView(views: [webViewAlphaSlider, currentWebViewAlphaDisplayLabel]); webViewAlphaSliderAndDisplay.orientation = .horizontal; webViewAlphaSliderAndDisplay.spacing = hStackSpacing; webViewAlphaSliderAndDisplay.alignment = .centerY
-        let webViewAlphaRow = createSettingRow(labelString: "Web Page Opacity:", control: webViewAlphaSliderAndDisplay, alignment: .centerY)
+        let webViewAlphaRow = createSettingRow(labelString: "Web Page Opacity:", control: webViewAlphaSliderAndDisplay); webViewAlphaRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(webViewAlphaRow)
         
         let temperatureSlider = NSSlider(value: currentWebpageTemperature, minValue: 0, maxValue: 100, target: nil, action: nil)
         temperatureSlider.allowsTickMarkValuesOnly = false; temperatureSlider.numberOfTickMarks = 11; temperatureSlider.translatesAutoresizingMaskIntoConstraints = false
         let temperatureDisplayLabel = NSTextField(labelWithString: "Cold / Warm"); temperatureDisplayLabel.isEditable = false; temperatureDisplayLabel.isSelectable = false; temperatureDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; temperatureDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let temperatureSliderAndDisplay = NSStackView(views: [temperatureSlider, temperatureDisplayLabel]); temperatureSliderAndDisplay.orientation = .horizontal; temperatureSliderAndDisplay.spacing = hStackSpacing; temperatureSliderAndDisplay.alignment = .centerY
-        let temperatureRow = createSettingRow(labelString: "Page Color Tone:", control: temperatureSliderAndDisplay, alignment: .centerY)
+        let temperatureRow = createSettingRow(labelString: "Page Color Tone:", control: temperatureSliderAndDisplay); temperatureRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(temperatureRow)
 
         let brightnessSlider = NSSlider(value: currentWebpageBrightness, minValue: 0, maxValue: 100, target: nil, action: nil)
         brightnessSlider.allowsTickMarkValuesOnly = false; brightnessSlider.numberOfTickMarks = 11; brightnessSlider.translatesAutoresizingMaskIntoConstraints = false
         let brightnessDisplayLabel = NSTextField(labelWithString: "Darker / Brighter"); brightnessDisplayLabel.isEditable = false; brightnessDisplayLabel.isSelectable = false; brightnessDisplayLabel.translatesAutoresizingMaskIntoConstraints = false; brightnessDisplayLabel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let brightnessSliderAndDisplay = NSStackView(views: [brightnessSlider, brightnessDisplayLabel]); brightnessSliderAndDisplay.orientation = .horizontal; brightnessSliderAndDisplay.spacing = hStackSpacing; brightnessSliderAndDisplay.alignment = .centerY
-        let brightnessRow = createSettingRow(labelString: "Page Brightness:", control: brightnessSliderAndDisplay, alignment: .centerY)
+        let brightnessRow = createSettingRow(labelString: "Page Brightness:", control: brightnessSliderAndDisplay); brightnessRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(brightnessRow)
 
         let globalBoldFontCheckbox = NSButton(checkboxWithTitle: "Force Bold Font Style on Web Pages", target: nil, action: nil)
         globalBoldFontCheckbox.state = globalBoldFontEnabled ? .on : .off
@@ -745,33 +1037,41 @@ class ViewController: NSViewController,
         let boldFontIndentView = NSView(); boldFontIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true
         let boldFontRow = NSStackView(views: [boldFontIndentView, globalBoldFontCheckbox])
         boldFontRow.orientation = .horizontal; boldFontRow.spacing = 0; boldFontRow.alignment = .firstBaseline
-
-
-        let globalShortcutSectionHeader = createSectionHeader(title: "Global Toggle Shortcut (Show/Hide Window)")
-        let currentShortcutDisplayLabel = NSTextField(labelWithString: "Current: \( (NSApp.delegate as? AppDelegate)?.formattedShortcutString() ?? "Not Set" )"); currentShortcutDisplayLabel.isEditable = false; currentShortcutDisplayLabel.isSelectable = false
-        let currentShortcutIndentView = NSView(); currentShortcutIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let currentShortcutRow = NSStackView(views: [currentShortcutIndentView, currentShortcutDisplayLabel]); currentShortcutRow.orientation = .horizontal; currentShortcutRow.alignment = .firstBaseline
-        let keyTextField = NSTextField(string: (NSApp.delegate as? AppDelegate)?.currentShortcutKeyCharacter ?? ""); keyTextField.placeholderString = "e.g., . or A"; keyTextField.widthAnchor.constraint(equalToConstant: 70).isActive = true; let keyRow = createSettingRow(labelString: "Key:", control: keyTextField)
-        let optionCheckbox = NSButton(checkboxWithTitle: "Option (⌥)", target: nil, action: nil); let commandCheckbox = NSButton(checkboxWithTitle: "Command (⌘)", target: nil, action: nil); let shiftCheckbox = NSButton(checkboxWithTitle: "Shift (⇧)", target: nil, action: nil); let controlCheckbox = NSButton(checkboxWithTitle: "Control (⌃)", target: nil, action: nil)
-        if let appDelegate = NSApp.delegate as? AppDelegate { optionCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.option) ? .on : .off; commandCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.command) ? .on : .off; shiftCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.shift) ? .on : .off; controlCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.control) ? .on : .off }
-        let modifiersCheckboxHStack = NSStackView(views: [optionCheckbox, commandCheckbox, shiftCheckbox, controlCheckbox]); modifiersCheckboxHStack.orientation = .horizontal; modifiersCheckboxHStack.spacing = hStackSpacing * 1.2; modifiersCheckboxHStack.alignment = .centerY; let modifiersRow = createSettingRow(labelString: "Modifiers:", control: modifiersCheckboxHStack, alignment: .centerY)
-
-        let otherShortcutsSectionHeader = createSectionHeader(title: "In-App Shortcuts")
-        let shortcutTogglePageLabel = NSTextField(labelWithString: "Toggle Page 1/2:  Command (⌘) + 1"); shortcutTogglePageLabel.isEditable = false; shortcutTogglePageLabel.isSelectable = false
-        let togglePageIndentView = NSView(); togglePageIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let togglePageRow = NSStackView(views: [togglePageIndentView, shortcutTogglePageLabel]); togglePageRow.orientation = .horizontal; togglePageRow.alignment = .firstBaseline
-
-        let mainVerticalStackView = NSStackView(); mainVerticalStackView.orientation = .vertical; mainVerticalStackView.spacing = vStackRowSpacing; mainVerticalStackView.alignment = .leading; mainVerticalStackView.edgeInsets = NSEdgeInsets(top: outerPadding, left: outerPadding, bottom: outerPadding, right: outerPadding)
-        mainVerticalStackView.addArrangedSubview(urlSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: urlSectionHeader); mainVerticalStackView.addArrangedSubview(url1Row); mainVerticalStackView.addArrangedSubview(url2Row); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: url2Row); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-        mainVerticalStackView.addArrangedSubview(behaviorSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: behaviorSectionHeader)
-        mainVerticalStackView.addArrangedSubview(autohideControlRow)
-        mainVerticalStackView.addArrangedSubview(desktopAssignmentRow)
-        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: desktopAssignmentRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-        mainVerticalStackView.addArrangedSubview(appearanceSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: appearanceSectionHeader); mainVerticalStackView.addArrangedSubview(windowAlphaRow); mainVerticalStackView.addArrangedSubview(webViewAlphaRow)
-        mainVerticalStackView.addArrangedSubview(temperatureRow)
-        mainVerticalStackView.addArrangedSubview(brightnessRow) // Added brightness row
         mainVerticalStackView.addArrangedSubview(boldFontRow)
         mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: boldFontRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-        mainVerticalStackView.addArrangedSubview(globalShortcutSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: globalShortcutSectionHeader); mainVerticalStackView.addArrangedSubview(currentShortcutRow); mainVerticalStackView.addArrangedSubview(keyRow); mainVerticalStackView.addArrangedSubview(modifiersRow); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: modifiersRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
-        mainVerticalStackView.addArrangedSubview(otherShortcutsSectionHeader); mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: otherShortcutsSectionHeader); mainVerticalStackView.addArrangedSubview(togglePageRow)
+
+        // --- Global Shortcut Section ---
+        let globalShortcutSectionHeader = createSectionHeader(title: "Global Toggle Shortcut (Show/Hide Window)")
+        mainVerticalStackView.addArrangedSubview(globalShortcutSectionHeader)
+        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: globalShortcutSectionHeader)
+        let currentShortcutDisplayLabel = NSTextField(labelWithString: "Current: \( (NSApp.delegate as? AppDelegate)?.formattedShortcutString() ?? "Not Set" )"); currentShortcutDisplayLabel.isEditable = false; currentShortcutDisplayLabel.isSelectable = false
+        let currentShortcutIndentView = NSView(); currentShortcutIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let currentShortcutRow = NSStackView(views: [currentShortcutIndentView, currentShortcutDisplayLabel]); currentShortcutRow.orientation = .horizontal; currentShortcutRow.alignment = .firstBaseline
+        mainVerticalStackView.addArrangedSubview(currentShortcutRow)
+        let keyTextField = NSTextField(string: (NSApp.delegate as? AppDelegate)?.currentShortcutKeyCharacter ?? ""); keyTextField.placeholderString = "e.g., . or A"; keyTextField.widthAnchor.constraint(equalToConstant: 70).isActive = true; let keyRow = createSettingRow(labelString: "Key:", control: keyTextField)
+        mainVerticalStackView.addArrangedSubview(keyRow)
+        let optionCheckbox = NSButton(checkboxWithTitle: "Option (⌥)", target: nil, action: nil); let commandCheckbox = NSButton(checkboxWithTitle: "Command (⌘)", target: nil, action: nil); let shiftCheckbox = NSButton(checkboxWithTitle: "Shift (⇧)", target: nil, action: nil); let controlCheckbox = NSButton(checkboxWithTitle: "Control (⌃)", target: nil, action: nil)
+        if let appDelegate = NSApp.delegate as? AppDelegate { optionCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.option) ? .on : .off; commandCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.command) ? .on : .off; shiftCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.shift) ? .on : .off; controlCheckbox.state = appDelegate.currentShortcutModifierFlags.contains(.control) ? .on : .off }
+        let modifiersCheckboxHStack = NSStackView(views: [optionCheckbox, commandCheckbox, shiftCheckbox, controlCheckbox]); modifiersCheckboxHStack.orientation = .horizontal; modifiersCheckboxHStack.spacing = hStackSpacing * 1.2; modifiersCheckboxHStack.alignment = .centerY; let modifiersRow = createSettingRow(labelString: "Modifiers:", control: modifiersCheckboxHStack); modifiersRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(modifiersRow)
+        mainVerticalStackView.setCustomSpacing(sectionBottomSpacing, after: modifiersRow); mainVerticalStackView.addArrangedSubview(createSeparatorBox()); mainVerticalStackView.setCustomSpacing(sectionBottomSpacing * 0.8, after: mainVerticalStackView.arrangedSubviews.last!)
+
+        // --- In-App Shortcut Section ---
+        let otherShortcutsSectionHeader = createSectionHeader(title: "In-App Shortcuts")
+        mainVerticalStackView.addArrangedSubview(otherShortcutsSectionHeader)
+        mainVerticalStackView.setCustomSpacing(sectionHeaderSpacing, after: otherShortcutsSectionHeader)
+        
+        let cycleLabel = NSTextField(labelWithString: "Cycle Pages:  Command (⌘) + `"); cycleLabel.isEditable = false; cycleLabel.isSelectable = false
+        let cycleIndentView = NSView(); cycleIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let cycleRow = NSStackView(views: [cycleIndentView, cycleLabel]); cycleRow.orientation = .horizontal; cycleRow.alignment = .firstBaseline
+        mainVerticalStackView.addArrangedSubview(cycleRow)
+
+        let shortcutTogglePageLabel = NSTextField(labelWithString: "Switch to Page:  Command (⌘) + 1...9, 0"); shortcutTogglePageLabel.isEditable = false; shortcutTogglePageLabel.isSelectable = false
+        let togglePageIndentView = NSView(); togglePageIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let togglePageRow = NSStackView(views: [togglePageIndentView, shortcutTogglePageLabel]); togglePageRow.orientation = .horizontal; togglePageRow.alignment = .firstBaseline
+        mainVerticalStackView.addArrangedSubview(togglePageRow)
+        
+        let actualSizeLabel = NSTextField(labelWithString: "Reset Zoom:  Command (⌘) + Backspace"); actualSizeLabel.isEditable = false; actualSizeLabel.isSelectable = false
+        let actualSizeIndentView = NSView(); actualSizeIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let actualSizeRow = NSStackView(views: [actualSizeIndentView, actualSizeLabel]); actualSizeRow.orientation = .horizontal; actualSizeRow.alignment = .firstBaseline
+        mainVerticalStackView.addArrangedSubview(actualSizeRow)
+        
         mainVerticalStackView.translatesAutoresizingMaskIntoConstraints = false; mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: 10); mainVerticalStackView.layoutSubtreeIfNeeded()
         let requiredHeight = mainVerticalStackView.fittingSize.height; mainVerticalStackView.frame = NSRect(x: 0, y: 0, width: desiredAccessoryViewWidth, height: requiredHeight)
         alert.accessoryView = mainVerticalStackView
@@ -779,7 +1079,13 @@ class ViewController: NSViewController,
         alert.window.layoutIfNeeded()
 
         alert.beginSheetModal(for: window) { response in
-            self.handleSettingsAlertResponse(response, alert: alert, url1TF: url1TextField, url2TF: url2TextField, autohideCB: autohideCheckbox,
+            self.handleSettingsAlertResponse(response, alert: alert,
+                                             urlTFs: urlTextFields,
+                                             labelTFs: labelTextFields,
+                                             enabledCBs: enabledCheckboxes,
+                                             persistCBs: persistCheckboxes,
+                                             unloadPopup: unloadPopup, // NEW
+                                             autohideCB: autohideCheckbox,
                                              desktopAssignmentControl: desktopAssignmentControl,
                                              windowAlphaSlider: windowAlphaSlider, windowAlphaDisplayLabel: currentWindowAlphaDisplayLabel,
                                              webViewAlphaSlider: webViewAlphaSlider, webViewAlphaDisplayLabel: currentWebViewAlphaDisplayLabel,
@@ -792,7 +1098,12 @@ class ViewController: NSViewController,
 
     private func handleSettingsAlertResponse(
         _ response: NSApplication.ModalResponse, alert: NSAlert,
-        url1TF: NSTextField, url2TF: NSTextField, autohideCB: NSButton,
+        urlTFs: [NSTextField],
+        labelTFs: [NSTextField],
+        enabledCBs: [NSButton],
+        persistCBs: [NSButton],
+        unloadPopup: NSPopUpButton, // NEW
+        autohideCB: NSButton,
         desktopAssignmentControl: NSSegmentedControl,
         windowAlphaSlider: NSSlider, windowAlphaDisplayLabel: NSTextField,
         webViewAlphaSlider: NSSlider, webViewAlphaDisplayLabel: NSTextField,
@@ -803,8 +1114,55 @@ class ViewController: NSViewController,
     ) {
         if response == .alertFirstButtonReturn {
             NSLog("VC: Settings Save button clicked.")
-            self.saveSettings(urlString: url1TF.stringValue, forKey: "customURL1_MultiAssistant_v1", defaultURL: self.defaultUrlString1, webView: self.webView1) { self.urlString1 = $0 }
-            self.saveSettings(urlString: url2TF.stringValue, forKey: "customURL2_MultiAssistant_v1", defaultURL: self.defaultUrlString2, webView: self.webView2) { self.urlString2 = $0 }
+            
+            let newLabels = labelTFs.map { $0.stringValue }
+            if newLabels != self.webTabLabels {
+                self.webTabLabels = newLabels
+                UserDefaults.standard.set(newLabels, forKey: ViewController.webTabLabelsKey)
+                NSLog("VC: Settings - Saved labels: \(newLabels)")
+            }
+            
+            let newEnabledStates = enabledCBs.map { $0.state == .on }
+            if newEnabledStates != self.webTabEnabledStates {
+                self.webTabEnabledStates = newEnabledStates
+                UserDefaults.standard.set(newEnabledStates, forKey: ViewController.webTabEnabledKey)
+                NSLog("VC: Settings - Saved enabled states: \(newEnabledStates)")
+                loadInitialContent()
+            }
+            
+            let newPersistStates = persistCBs.map { $0.state == .on }
+            if newPersistStates != self.webTabPersistStates {
+                self.webTabPersistStates = newPersistStates
+                UserDefaults.standard.set(newPersistStates, forKey: ViewController.webTabPersistKey)
+                NSLog("VC: Settings - Saved persist states: \(newPersistStates)")
+
+                for (index, shouldPersist) in newPersistStates.enumerated() {
+                    if shouldPersist, let timer = unloadTimers[index] {
+                        timer.cancel()
+                        unloadTimers.removeValue(forKey: index)
+                        NSLog("VC: Settings - Cancelled pending unload for newly persisted tab \(index + 1).")
+                    }
+                }
+            }
+            
+            for (index, textField) in urlTFs.enumerated() {
+                saveURLSetting(for: index, from: textField.stringValue)
+            }
+            
+            if !webTabEnabledStates[activeWebViewIndex] {
+                activeWebViewIndex = webTabEnabledStates.firstIndex(of: true) ?? 0
+                for (i, webView) in webViews.enumerated() {
+                    webView?.isHidden = (i != activeWebViewIndex)
+                }
+            }
+            
+            // NEW: Save unload timer duration
+            if let selectedDuration = unloadPopup.selectedItem?.representedObject as? Double {
+                currentUnloadDelay = selectedDuration
+                UserDefaults.standard.set(selectedDuration, forKey: ViewController.unloadTimerDurationKey)
+                NSLog("VC: Settings - Unload delay set to: \(selectedDuration) seconds.")
+            }
+
             let autohideEnabled = autohideCB.state == .on; UserDefaults.standard.set(autohideEnabled, forKey: AppDelegate.autohideWindowKey); NSLog("VC: Settings - Autohide window set to: \(autohideEnabled)")
 
             let selectedSegment = desktopAssignmentControl.selectedSegment
@@ -830,10 +1188,7 @@ class ViewController: NSViewController,
             currentWebViewAlpha = newWebViewAlphaValue
             UserDefaults.standard.set(newWebViewAlphaValue, forKey: ViewController.webViewAlphaKey)
             
-            let webViews: [WKWebView] = [webView1, webView2]
-            for wv in webViews {
-                wv.alphaValue = newWebViewAlphaValue
-            }
+            webViews.compactMap { $0 }.forEach { $0.alphaValue = newWebViewAlphaValue }
 
             webViewAlphaDisplayLabel.stringValue = String(format: "Content Opacity: %.0f%%", newWebViewAlphaValue * 100)
             NSLog("VC: Settings - Web View alpha set to: \(newWebViewAlphaValue)")
@@ -883,11 +1238,92 @@ class ViewController: NSViewController,
         } else { NSLog("VC: Settings Cancel button clicked or sheet dismissed.") }
     }
 
-    private func saveSettings(urlString: String, forKey key: String, defaultURL: String, webView: WKWebView, assignToInstanceVar: @escaping (String) -> Void) {
+    private func saveURLSetting(for index: Int, from urlString: String) {
+        let key = "customURL\(index + 1)_MultiAssistant_v2"
         let trimmedUrl = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedUrl.isEmpty { UserDefaults.standard.set(defaultURL, forKey: key); assignToInstanceVar(defaultURL); if let url = URL(string: defaultURL) { webView.load(URLRequest(url: url)) }; NSLog("VC: Settings - \(key) reset to default: \(defaultURL)")
-        } else if let url = URL(string: trimmedUrl), (url.scheme == "http" || url.scheme == "https") { UserDefaults.standard.set(trimmedUrl, forKey: key); assignToInstanceVar(trimmedUrl); if webView.url?.absoluteString != trimmedUrl { webView.load(URLRequest(url: url)) }; NSLog("VC: Settings - \(key) updated to: \(trimmedUrl)")
-        } else { NSLog("VC: Settings - Invalid URL for \(key): '\(trimmedUrl)'. Not saved. Previous URL remains.") }
+        let previousUrl = self.urlStrings[index]
+        
+        guard trimmedUrl != previousUrl else { return }
+
+        if trimmedUrl.isEmpty {
+            self.urlStrings[index] = ""
+            UserDefaults.standard.set("", forKey: key)
+            if let webView = webViews[index], webView.url?.absoluteString != "about:blank" {
+                 webView.loadHTMLString("<html><body></body></html>", baseURL: nil)
+            }
+            NSLog("VC: Settings - \(key) cleared. Loading blank page.")
+        
+        } else if let url = URL(string: trimmedUrl), (url.scheme == "http" || url.scheme == "https") {
+            self.urlStrings[index] = trimmedUrl
+            UserDefaults.standard.set(trimmedUrl, forKey: key)
+            // The view will be loaded/reloaded on next switch if needed
+            if let webView = webViews[index], webView.url?.absoluteString != trimmedUrl {
+                webView.load(URLRequest(url: url))
+            }
+            NSLog("VC: Settings - \(key) updated to: \(trimmedUrl)")
+            
+        } else {
+            NSLog("VC: Settings - Invalid URL for \(key): '\(trimmedUrl)'. Not saved. The old value '\(previousUrl)' remains.")
+        }
+    }
+    
+    // MARK: - HUD
+    private func showTabSwitchHUD(for index: Int) {
+        let labelText = webTabLabels[index]
+        guard !labelText.isEmpty else { return }
+
+        // Cancel any pending dismissal and remove existing HUD
+        hudWorkItem?.cancel()
+        view.subviews.filter { $0.tag == 1001 }.forEach { $0.removeFromSuperview() }
+
+        let hudLabel = NSTextField(labelWithString: labelText)
+        hudLabel.tag = 1001
+        hudLabel.translatesAutoresizingMaskIntoConstraints = false
+        hudLabel.backgroundColor = NSColor(calibratedWhite: 0.1, alpha: 0.8)
+        hudLabel.textColor = .white
+        hudLabel.alignment = .center
+        hudLabel.font = .systemFont(ofSize: 24, weight: .bold)
+        hudLabel.wantsLayer = true
+        hudLabel.layer?.cornerRadius = 16
+        hudLabel.isBezeled = false
+        hudLabel.drawsBackground = true
+        hudLabel.alphaValue = 0.0
+        
+        // Add padding inside the label
+        hudLabel.sizeToFit()
+        let horizontalPadding: CGFloat = 40
+        let verticalPadding: CGFloat = 20
+        let hudWidth = hudLabel.frame.width + horizontalPadding
+        let hudHeight = hudLabel.frame.height + verticalPadding
+
+        view.addSubview(hudLabel)
+        hudLabel.layer?.zPosition = .greatestFiniteMagnitude
+        
+        NSLayoutConstraint.activate([
+            hudLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            hudLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            hudLabel.widthAnchor.constraint(equalToConstant: hudWidth),
+            hudLabel.heightAnchor.constraint(equalToConstant: hudHeight)
+        ])
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            hudLabel.animator().alphaValue = 1.0
+        })
+
+        let workItem = DispatchWorkItem {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.3
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                hudLabel.animator().alphaValue = 0.0
+            }, completionHandler: {
+                hudLabel.removeFromSuperview()
+            })
+        }
+        
+        self.hudWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
     }
 }
 
