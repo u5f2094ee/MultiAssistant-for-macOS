@@ -44,6 +44,7 @@ class ViewController: NSViewController,
     static let webTabLabelsKey = "webTabLabelsKey_v1"
     static let webTabPersistKey = "webTabPersistKey_v1"
     static let unloadTimerDurationKey = "unloadTimerDurationKey_v1" // NEW: Key for timer duration
+    static let cycleWithPersistOnlyKey = "cycleWithPersistOnlyKey_v1" // NEW: Key for cycle behavior
 
     // Runtime state
     private var webViewZoomScales: [CGFloat] = []
@@ -60,6 +61,7 @@ class ViewController: NSViewController,
     private var currentWebpageTemperature: Double = 50.0
     private var currentWebpageBrightness: Double = 50.0
     private var currentUnloadDelay: TimeInterval = 300.0 // NEW: User-configurable unload delay
+    private var cycleWithPersistOnly: Bool = false // NEW: State for cycle behavior
 
     private var webViewsReloadingAfterTermination: Set<WKWebView> = []
     // MODIFIED: This now force-unwraps, relying on logic to ensure the active view is never nil
@@ -388,6 +390,14 @@ class ViewController: NSViewController,
             currentWebpageBrightness = 50.0
             d.set(currentWebpageBrightness, forKey: ViewController.webpageBrightnessKey)
         }
+        
+        // NEW: Load cycle behavior setting
+        if d.object(forKey: ViewController.cycleWithPersistOnlyKey) != nil {
+            cycleWithPersistOnly = d.bool(forKey: ViewController.cycleWithPersistOnlyKey)
+        } else {
+            cycleWithPersistOnly = false // Default to cycling through all enabled tabs
+            d.set(cycleWithPersistOnly, forKey: ViewController.cycleWithPersistOnlyKey)
+        }
 
         NSLog("VC: Settings loaded for \(webViewCount) pages.")
     }
@@ -591,17 +601,32 @@ class ViewController: NSViewController,
 
     // MARK: - Actions & Web Control
     @objc func cycleToNextPage() {
-        guard webTabEnabledStates.contains(true) else {
-            NSLog("VC: Cycle Page - No enabled tabs to cycle through.")
+        // NEW: Create a filtered list of tab indices to cycle through based on the setting
+        let tabsToCycle = webTabEnabledStates.indices.filter {
+            webTabEnabledStates[$0] && (!cycleWithPersistOnly || webTabPersistStates[$0])
+        }
+
+        // Must have at least two tabs in the filtered list to be able to cycle
+        guard tabsToCycle.count > 1 else {
+            NSLog("VC: Cycle Page - Not enough tabs (\(tabsToCycle.count)) to cycle through with current filter (Persist Only: \(cycleWithPersistOnly)).")
             return
         }
-        
-        var nextIndex = (activeWebViewIndex + 1) % webViewCount
-        while !webTabEnabledStates[nextIndex] {
-            nextIndex = (nextIndex + 1) % webViewCount
-            if nextIndex == activeWebViewIndex { return }
+
+        // Find the position of the currently active tab within our filtered list
+        guard let currentIndexInCycle = tabsToCycle.firstIndex(of: activeWebViewIndex) else {
+            // This can happen if the active tab is not in the cycle list (e.g., it's not persisted when the setting requires it).
+            // In this case, just switch to the very first available tab in the filtered list.
+            if let firstValidTab = tabsToCycle.first {
+                switchToPage(index: firstValidTab)
+            }
+            return
         }
-        switchToPage(index: nextIndex)
+
+        // Get the next index in the filtered list, wrapping around if necessary
+        let nextIndexInCycle = (currentIndexInCycle + 1) % tabsToCycle.count
+        let nextWebViewIndex = tabsToCycle[nextIndexInCycle]
+
+        switchToPage(index: nextWebViewIndex)
     }
     
     @objc func switchToPage(index: Int, showHUD: Bool = true) {
@@ -985,6 +1010,14 @@ class ViewController: NSViewController,
         }
         let unloadRow = createSettingRow(labelString: "Unload Inactive Tabs After:", control: unloadPopup); unloadRow.alignment = .centerY
         mainVerticalStackView.addArrangedSubview(unloadRow)
+        
+        // NEW: Cycle Behavior Setting
+        let cycleBehaviorControl = NSSegmentedControl(labels: ["All Enabled Tabs", "Persisted Tabs Only"], trackingMode: .selectOne, target: nil, action: nil)
+        cycleBehaviorControl.segmentStyle = .texturedRounded
+        cycleBehaviorControl.selectedSegment = cycleWithPersistOnly ? 1 : 0
+        let cycleBehaviorRow = createSettingRow(labelString: "Cycle (⌘+`) Through:", control: cycleBehaviorControl)
+        cycleBehaviorRow.alignment = .centerY
+        mainVerticalStackView.addArrangedSubview(cycleBehaviorRow)
 
         let autohideCheckbox = NSButton(checkboxWithTitle: "Auto-hide window when application is inactive", target: nil, action: nil); autohideCheckbox.state = UserDefaults.standard.bool(forKey: AppDelegate.autohideWindowKey) ? .on : .off; autohideCheckbox.translatesAutoresizingMaskIntoConstraints = false
         let autohideIndentView = NSView(); autohideIndentView.widthAnchor.constraint(equalToConstant: labelColumnWidth + hStackSpacing).isActive = true; let autohideControlRow = NSStackView(views: [autohideIndentView, autohideCheckbox]); autohideControlRow.orientation = .horizontal; autohideControlRow.spacing = 0; autohideControlRow.alignment = .firstBaseline
@@ -1084,7 +1117,8 @@ class ViewController: NSViewController,
                                              labelTFs: labelTextFields,
                                              enabledCBs: enabledCheckboxes,
                                              persistCBs: persistCheckboxes,
-                                             unloadPopup: unloadPopup, // NEW
+                                             unloadPopup: unloadPopup,
+                                             cycleBehaviorControl: cycleBehaviorControl, // NEW
                                              autohideCB: autohideCheckbox,
                                              desktopAssignmentControl: desktopAssignmentControl,
                                              windowAlphaSlider: windowAlphaSlider, windowAlphaDisplayLabel: currentWindowAlphaDisplayLabel,
@@ -1102,7 +1136,8 @@ class ViewController: NSViewController,
         labelTFs: [NSTextField],
         enabledCBs: [NSButton],
         persistCBs: [NSButton],
-        unloadPopup: NSPopUpButton, // NEW
+        unloadPopup: NSPopUpButton,
+        cycleBehaviorControl: NSSegmentedControl, // NEW
         autohideCB: NSButton,
         desktopAssignmentControl: NSSegmentedControl,
         windowAlphaSlider: NSSlider, windowAlphaDisplayLabel: NSTextField,
@@ -1161,6 +1196,14 @@ class ViewController: NSViewController,
                 currentUnloadDelay = selectedDuration
                 UserDefaults.standard.set(selectedDuration, forKey: ViewController.unloadTimerDurationKey)
                 NSLog("VC: Settings - Unload delay set to: \(selectedDuration) seconds.")
+            }
+            
+            // NEW: Save cycle behavior
+            let newCycleBehavior = cycleBehaviorControl.selectedSegment == 1
+            if newCycleBehavior != self.cycleWithPersistOnly {
+                self.cycleWithPersistOnly = newCycleBehavior
+                UserDefaults.standard.set(newCycleBehavior, forKey: ViewController.cycleWithPersistOnlyKey)
+                NSLog("VC: Settings - Cycle behavior set to persist only: \(newCycleBehavior)")
             }
 
             let autohideEnabled = autohideCB.state == .on; UserDefaults.standard.set(autohideEnabled, forKey: AppDelegate.autohideWindowKey); NSLog("VC: Settings - Autohide window set to: \(autohideEnabled)")
